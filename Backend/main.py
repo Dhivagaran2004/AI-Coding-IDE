@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 
-from app.database.database import engine, Base
+from App.database.database import engine, Base
 
 # Import models so SQLAlchemy knows about them
-from app.models.user import User
+from App.models.user import User
 
 Base.metadata.create_all(bind=engine)
 
