@@ -1,12 +1,21 @@
 from fastapi import FastAPI
 
+from app.database.database import engine, Base
+
+# Import models so SQLAlchemy knows about them
+from app.models.user import User
+
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
-    title="Coding IDE",
-    version="1.0.0")
+    title="AI Coding IDE",
+    version="1.0.0"
+)
+
 
 @app.get("/")
 def home():
-    print("hello")
-    return {"Message":"Coding IDE"}
-
+    return {
+        "message": "AI Coding IDE Backend Running"
+    }
 
