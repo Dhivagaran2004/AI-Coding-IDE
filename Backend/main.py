@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 
 from App.database.database import engine, Base
-
 # Import models so SQLAlchemy knows about them
 from App.models.user import User
 
