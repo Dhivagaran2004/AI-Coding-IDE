@@ -4,6 +4,8 @@ from App.database.database import engine, Base
 # Import models so SQLAlchemy knows about them
 from App.models.user import User
 
+from App.routes.auth import router as auth_router
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -18,3 +20,5 @@ def home():
         "message": "AI Coding IDE Backend Running"
     }
 
+
+app.include_router(auth_router)

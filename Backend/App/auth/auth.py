@@ -7,7 +7,7 @@ from App.config import(SECRET_KEY,ALGORITHM,ACCESS_TOKEN_EXPIRE_MINUTES)
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],
-    DeprecationWarning="auto"
+    deprecated="auto"
 )
 
 
