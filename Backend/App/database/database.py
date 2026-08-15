@@ -1,8 +1,14 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker,declarative_base
-from App.config import DATABASE_URL
+from App.config import DATABASE_URL, DB_SCHEMA
 
-engine =create_engine(DATABASE_URL)
+connect_args = (
+    {"options": f"-csearch_path={DB_SCHEMA}"}
+    if DB_SCHEMA
+    else {}
+)
+
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 SessionLocal = sessionmaker(
     autocommit=False,
