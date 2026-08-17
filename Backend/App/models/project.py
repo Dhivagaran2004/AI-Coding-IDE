@@ -8,7 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey
 )
-
+from sqlalchemy.orm import relationship
 from App.database.database import Base
 
 
@@ -52,4 +52,14 @@ class Project(Base):
         DateTime,
         default=datetime.utcnow,
         onupdate=datetime.utcnow
+    )
+    user = relationship(
+        "User",
+        back_populates="projects"
+    )
+
+    files = relationship(
+        "ProjectFile",
+        back_populates="project",
+        cascade="all, delete-orphan"
     )
