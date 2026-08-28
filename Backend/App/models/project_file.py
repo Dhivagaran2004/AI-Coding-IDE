@@ -5,10 +5,10 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    ForeignKey,
     DateTime,
-    ForeignKey
+    Index,
 )
-
 from sqlalchemy.orm import relationship
 
 from App.database.database import Base
@@ -89,3 +89,11 @@ class ProjectFile(Base):
         back_populates="parent",
         cascade="all, delete-orphan"
     )
+
+
+
+Index(
+    "ix_project_files_project_parent",
+    ProjectFile.project_id,
+    ProjectFile.parent_id
+)

@@ -82,6 +82,128 @@ def get_project_file(
         )
 
     return project_file
+#===============================================================
+
+def validate_parent(
+    project_id: int,
+    parent_id: int,
+    db: Session
+):
+
+    parent = (
+        db.query(ProjectFile)
+        .filter(
+            ProjectFile.id == parent_id,
+            ProjectFile.project_id == project_id
+        )
+        .first()
+    )
+
+    if parent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Parent folder not found"
+        )
+
+    if parent.type != "folder":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Parent must be a folder"
+        )
+
+    return parent
+ 
+#===============================================================
+
+def validate_move(
+    project_id: int,
+    file_id: int,
+    new_parent_id: int,
+    db: Session
+):
+
+    # Cannot be its own parent
+    if file_id == new_parent_id:
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An item cannot be its own parent"
+        )
+
+    # Get destination
+    new_parent = (
+        db.query(ProjectFile)
+        .filter(
+            ProjectFile.id == new_parent_id,
+            ProjectFile.project_id == project_id
+        )
+        .first()
+    )
+
+    if new_parent is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Destination folder not found"
+        )
+
+    # Destination must be folder
+    if new_parent.type != "folder":
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Destination must be a folder"
+        )
+
+    # Get current item
+    current_item = (
+        db.query(ProjectFile)
+        .filter(
+            ProjectFile.id == file_id,
+            ProjectFile.project_id == project_id
+        )
+        .first()
+    )
+
+    if current_item is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File or folder not found"
+        )
+
+    # Files cannot create folder cycles
+    if current_item.type != "folder":
+        return
+
+    # Walk upward through parents
+    current_parent_id = new_parent_id
+
+    while current_parent_id is not None:
+
+        if current_parent_id == file_id:
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot move a folder inside "
+                    "itself or its child"
+                )
+            )
+
+        parent = (
+            db.query(ProjectFile)
+            .filter(
+                ProjectFile.id == current_parent_id,
+                ProjectFile.project_id == project_id
+            )
+            .first()
+        )
+
+        if parent is None:
+            break
+
+        current_parent_id = parent.parent_id
 
 
 # =========================================================
@@ -454,3 +576,4 @@ def get_project_file_tree(
                 parent_node.children.append(node)
 
     return roots
+

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # =========================================
@@ -89,13 +89,52 @@ class ProjectFileResponse(BaseModel):
 class ProjectFileTree(BaseModel):
 
     id: int
-
     name: str
-
     type: str
 
-    children: List["ProjectFileTree"] = []
+    children: List["ProjectFileTree"] = Field(
+        default_factory=list
+    )
 
     model_config = ConfigDict(
         from_attributes=True
     )
+
+#==============================================
+class ProjectFileCreate(BaseModel):
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255
+    )
+
+    type: str = Field(
+        ...,
+        pattern="^(file|folder)$"
+    )
+
+    parent_id: int | None = None
+
+    content: str | None = None
+
+    language: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value):
+
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "File or folder name cannot be empty"
+            )
+
+        if "/" in value or "\\" in value:
+
+            raise ValueError(
+                "File name cannot contain path separators"
+            )
+
+        return value
