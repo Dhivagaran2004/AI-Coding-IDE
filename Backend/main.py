@@ -9,6 +9,7 @@ from App.routes.auth import router as auth_router
 from App.routes.User import router as user_router
 from App.routes.project import router as project_router
 from App.routes.project_file import router as project_file_router
+from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
 
@@ -16,6 +17,16 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="AI Coding IDE",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
