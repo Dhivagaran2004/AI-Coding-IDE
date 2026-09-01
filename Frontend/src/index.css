@@ -1,19 +1,69 @@
-* {
+/* =========================================================
+   AI CODING IDE
+   FINAL GLOBAL STYLES
+   Phase 6 - Professional IDE Layout
+   ========================================================= */
+
+/* =========================================================
+   GLOBAL RESET
+   ========================================================= */
+
+*,
+*::before,
+*::after {
     box-sizing: border-box;
 }
 
 html,
 body,
 #root {
-    margin: 0;
-    padding: 0;
     width: 100%;
     height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
 }
 
 body {
-    font-family: Arial, sans-serif;
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Arial,
+        sans-serif;
+
+    background: #1e1e1e;
+    color: #cccccc;
+
+    overflow: hidden;
 }
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button {
+    outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+    outline: 1px solid #007acc;
+    outline-offset: 1px;
+}
+
+
+/* =========================================================
+   AUTHENTICATION
+   ========================================================= */
 
 .auth-page {
     width: 100%;
@@ -23,139 +73,252 @@ body {
     align-items: center;
     justify-content: center;
 
-    background: #f5f5f5;
+    padding: 24px;
+
+    background:
+        radial-gradient(circle at top,
+            #252525 0%,
+            #181818 45%,
+            #111111 100%);
+
+    color: #cccccc;
 }
+
 
 .auth-card {
     width: 400px;
+    max-width: 100%;
 
     padding: 32px;
 
-    background: white;
+    background: #252526;
 
+    border: 1px solid #333333;
     border-radius: 8px;
 
     box-shadow:
-        0 4px 20px rgba(0, 0, 0, 0.08);
+        0 20px 50px rgba(0, 0, 0, 0.35);
 }
+
 
 .auth-card h1 {
-    margin-top: 0;
+    margin: 0 0 8px;
+
+    color: #ffffff;
+
+    font-size: 24px;
+    font-weight: 600;
 }
 
+
 .auth-card h2 {
-    margin-bottom: 24px;
+    margin: 0 0 24px;
+
+    color: #cccccc;
+
+    font-size: 18px;
+    font-weight: 500;
 }
+
 
 .form-group {
     margin-bottom: 18px;
 }
 
+
 .form-group label {
     display: block;
 
-    margin-bottom: 6px;
+    margin-bottom: 7px;
 
-    font-weight: 600;
+    color: #cccccc;
+
+    font-size: 13px;
+    font-weight: 500;
 }
+
 
 .form-group input {
     width: 100%;
+    height: 38px;
 
-    padding: 10px 12px;
+    padding: 0 12px;
 
-    border: 1px solid #ccc;
+    background: #1e1e1e;
 
-    border-radius: 4px;
+    border: 1px solid #3f3f46;
+    border-radius: 5px;
+
+    color: #ffffff;
 
     font-size: 14px;
+
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
 }
+
+
+.form-group input::placeholder {
+    color: #666666;
+}
+
+
+.form-group input:hover {
+    border-color: #555555;
+}
+
+
+.form-group input:focus {
+    border-color: #007acc;
+
+    box-shadow:
+        0 0 0 1px rgba(0, 122, 204, 0.15);
+
+    outline: none;
+}
+
 
 .auth-card button {
     width: 100%;
+    min-height: 38px;
 
-    padding: 11px;
+    padding: 9px 14px;
 
-    border: none;
+    border: 1px solid #007acc;
+    border-radius: 5px;
 
-    border-radius: 4px;
+    background: #007acc;
+
+    color: #ffffff;
 
     cursor: pointer;
 
-    font-size: 15px;
+    font-size: 14px;
+    font-weight: 500;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease;
 }
 
+
+.auth-card button:hover:not(:disabled) {
+    background: #1685c9;
+    border-color: #1685c9;
+}
+
+
 .auth-card button:disabled {
+    opacity: 0.5;
+
     cursor: not-allowed;
 }
+
 
 .auth-error {
     margin-bottom: 16px;
 
-    padding: 10px;
+    padding: 10px 12px;
 
-    border-radius: 4px;
+    background: #3b2020;
 
-    background: #ffe5e5;
+    border: 1px solid #6b3030;
+    border-radius: 5px;
+
+    color: #f48771;
+
+    font-size: 13px;
 }
 
+
+/* =========================================================
+   PROJECTS DASHBOARD
+   ========================================================= */
+
 .projects-page {
+    width: 100%;
     min-height: 100vh;
-    background: #f5f5f5;
+
+    overflow-y: auto;
+
+    background: #111111;
+
+    color: #cccccc;
 }
 
 
 .dashboard-header {
-    height: 72px;
+    height: 64px;
 
     display: flex;
     align-items: center;
     justify-content: space-between;
 
-    padding: 0 32px;
+    padding: 0 28px;
 
-    background: #ffffff;
+    background: #181818;
 
-    border-bottom: 1px solid #e5e5e5;
+    border-bottom: 1px solid #2d2d2d;
 }
 
 
 .dashboard-header h1 {
     margin: 0;
 
-    font-size: 22px;
+    color: #ffffff;
+
+    font-size: 18px;
+    font-weight: 600;
 }
 
 
 .dashboard-header span {
     display: block;
 
-    margin-top: 4px;
+    margin-top: 3px;
 
-    font-size: 13px;
+    color: #858585;
 
-    color: #777;
+    font-size: 12px;
 }
 
 
 .logout-button {
     display: flex;
     align-items: center;
-    gap: 8px;
 
-    padding: 9px 14px;
+    gap: 7px;
 
-    border: 1px solid #ddd;
+    height: 32px;
 
-    border-radius: 6px;
+    padding: 0 12px;
 
-    background: white;
+    background: #252526;
+
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
+
+    color: #cccccc;
 
     cursor: pointer;
+
+    font-size: 12px;
+
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
+}
+
+
+.logout-button:hover {
+    background: #333333;
+    color: #ffffff;
 }
 
 
 .projects-content {
+    width: 100%;
     max-width: 1200px;
 
     margin: 0 auto;
@@ -166,10 +329,10 @@ body {
 
 .projects-toolbar {
     display: flex;
-
-    align-items: center;
-
+    align-items: flex-end;
     justify-content: space-between;
+
+    gap: 20px;
 
     margin-bottom: 28px;
 }
@@ -178,49 +341,72 @@ body {
 .projects-toolbar h2 {
     margin: 0;
 
-    font-size: 28px;
+    color: #ffffff;
+
+    font-size: 24px;
+    font-weight: 600;
 }
 
 
 .projects-toolbar p {
-    margin-top: 6px;
+    margin: 6px 0 0;
 
-    color: #777;
+    color: #858585;
+
+    font-size: 13px;
 }
 
 
 .toolbar-actions {
     display: flex;
+    align-items: center;
 
-    gap: 10px;
+    gap: 8px;
 }
 
 
 .toolbar-actions button {
     display: flex;
-
     align-items: center;
 
     gap: 7px;
 
-    padding: 10px 14px;
+    height: 34px;
 
-    border: 1px solid #ddd;
+    padding: 0 12px;
 
-    border-radius: 6px;
+    background: #252526;
 
-    background: white;
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
+
+    color: #cccccc;
 
     cursor: pointer;
+
+    font-size: 12px;
+}
+
+
+.toolbar-actions button:hover {
+    background: #333333;
+    color: #ffffff;
 }
 
 
 .toolbar-actions .create-project-button {
-    background: #111;
+    background: #007acc;
 
-    color: white;
+    border-color: #007acc;
 
-    border-color: #111;
+    color: #ffffff;
+}
+
+
+.toolbar-actions .create-project-button:hover {
+    background: #1685c9;
+
+    border-color: #1685c9;
 }
 
 
@@ -230,232 +416,281 @@ body {
     grid-template-columns:
         repeat(auto-fill, minmax(280px, 1fr));
 
-    gap: 20px;
+    gap: 18px;
 }
 
 
 .project-card {
     padding: 20px;
 
-    background: white;
+    background: #1e1e1e;
 
-    border: 1px solid #e5e5e5;
+    border: 1px solid #333333;
+    border-radius: 7px;
 
-    border-radius: 10px;
+    transition:
+        border-color 0.15s ease,
+        transform 0.15s ease;
+}
 
-    box-shadow:
-        0 2px 8px rgba(0, 0, 0, 0.04);
+
+.project-card:hover {
+    border-color: #4a4a4a;
+
+    transform: translateY(-1px);
 }
 
 
 .project-card-header {
     display: flex;
-
-    justify-content: space-between;
-
     align-items: flex-start;
+    justify-content: space-between;
 }
 
 
 .project-icon {
-    width: 44px;
-
-    height: 44px;
+    width: 42px;
+    height: 42px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
-    border-radius: 8px;
+    background: #252526;
 
-    background: #f0f0f0;
+    border: 1px solid #333333;
+    border-radius: 6px;
+
+    color: #cccccc;
 }
 
 
 .project-card-actions {
     display: flex;
 
-    gap: 5px;
+    gap: 3px;
 }
 
 
 .project-card-actions button {
+    width: 30px;
+    height: 30px;
+
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
-    width: 34px;
-
-    height: 34px;
-
-    border: none;
+    padding: 0;
 
     background: transparent;
 
-    cursor: pointer;
+    border: none;
+    border-radius: 4px;
 
-    border-radius: 5px;
+    color: #858585;
+
+    cursor: pointer;
+}
+
+
+.project-card-actions button:hover {
+    background: #333333;
+
+    color: #ffffff;
 }
 
 
 .project-card h3 {
-    margin: 18px 0 8px;
+    margin: 16px 0 7px;
 
-    font-size: 19px;
+    color: #ffffff;
+
+    font-size: 16px;
+    font-weight: 500;
 }
 
 
 .project-description {
-    min-height: 40px;
+    min-height: 38px;
 
     margin: 0 0 14px;
 
-    color: #666;
+    color: #858585;
 
-    font-size: 14px;
+    font-size: 13px;
+
+    line-height: 1.5;
 }
 
 
 .project-language {
     display: inline-block;
 
-    padding: 5px 9px;
+    padding: 4px 8px;
 
-    border-radius: 5px;
+    background: #252526;
 
-    background: #f0f0f0;
+    border: 1px solid #333333;
+    border-radius: 4px;
 
-    font-size: 12px;
+    color: #aaa;
+
+    font-size: 11px;
 }
 
 
 .open-project-button {
     width: 100%;
 
-    margin-top: 18px;
+    margin-top: 16px;
 
-    padding: 10px;
+    height: 34px;
 
-    border: none;
+    background: #252526;
 
-    border-radius: 6px;
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
 
-    background: #111;
-
-    color: white;
+    color: #cccccc;
 
     cursor: pointer;
+
+    font-size: 12px;
+}
+
+
+.open-project-button:hover {
+    background: #333333;
+
+    color: #ffffff;
 }
 
 
 .projects-loading {
     padding: 60px;
 
-    text-align: center;
+    color: #858585;
 
-    color: #777;
+    text-align: center;
 }
 
 
 .empty-projects {
-    padding: 80px 20px;
+    padding: 70px 20px;
+
+    background: #1e1e1e;
+
+    border: 1px dashed #444444;
+    border-radius: 7px;
 
     text-align: center;
-
-    background: white;
-
-    border: 1px dashed #ccc;
-
-    border-radius: 10px;
 }
 
 
 .empty-projects h3 {
-    margin-bottom: 8px;
+    margin: 0 0 8px;
+
+    color: #cccccc;
+
+    font-size: 17px;
 }
 
 
 .empty-projects p {
-    color: #777;
+    margin: 0 0 18px;
+
+    color: #858585;
+
+    font-size: 13px;
 }
 
 
 .empty-projects button {
     display: inline-flex;
-
     align-items: center;
 
     gap: 7px;
 
-    padding: 10px 16px;
+    height: 34px;
 
-    border: none;
+    padding: 0 14px;
 
-    border-radius: 6px;
+    background: #007acc;
 
-    background: #111;
+    border: 1px solid #007acc;
+    border-radius: 5px;
 
-    color: white;
+    color: #ffffff;
 
     cursor: pointer;
+
+    font-size: 12px;
+}
+
+
+.empty-projects button:hover {
+    background: #1685c9;
 }
 
 
 .dashboard-error {
     margin-bottom: 20px;
 
-    padding: 12px;
+    padding: 11px 13px;
 
-    border-radius: 6px;
+    background: #3b2020;
 
-    background: #ffe5e5;
+    border: 1px solid #6b3030;
+    border-radius: 5px;
 
-    color: #a00000;
+    color: #f48771;
+
+    font-size: 13px;
 }
 
+
+/* =========================================================
+   MODAL
+   ========================================================= */
 
 .modal-overlay {
     position: fixed;
 
     inset: 0;
 
+    z-index: 1000;
+
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
-    background: rgba(0, 0, 0, 0.45);
+    padding: 20px;
 
-    z-index: 1000;
+    background: rgba(0, 0, 0, 0.65);
+
+    backdrop-filter: blur(2px);
 }
 
 
 .modal {
     width: 450px;
-
-    max-width: calc(100% - 32px);
+    max-width: 100%;
 
     padding: 24px;
 
-    background: white;
+    background: #252526;
 
-    border-radius: 10px;
+    border: 1px solid #3a3a3a;
+    border-radius: 7px;
 
     box-shadow:
-        0 15px 50px rgba(0, 0, 0, 0.2);
+        0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 
 .modal-header {
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
 
     margin-bottom: 22px;
@@ -464,225 +699,131 @@ body {
 
 .modal-header h2 {
     margin: 0;
+
+    color: #ffffff;
+
+    font-size: 18px;
+    font-weight: 500;
 }
 
 
 .modal-header button {
+    width: 28px;
+    height: 28px;
+
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
-    border: none;
+    padding: 0;
 
     background: transparent;
 
+    border: none;
+    border-radius: 4px;
+
+    color: #858585;
+
     cursor: pointer;
+}
+
+
+.modal-header button:hover {
+    background: #333333;
+
+    color: #ffffff;
 }
 
 
 .modal textarea {
     width: 100%;
+    min-height: 100px;
 
-    padding: 10px;
+    padding: 10px 12px;
 
-    border: 1px solid #ccc;
+    background: #1e1e1e;
 
+    border: 1px solid #3f3f46;
     border-radius: 5px;
+
+    color: #ffffff;
 
     resize: vertical;
 
-    font-family: inherit;
+    font-size: 13px;
+}
+
+
+.modal textarea:focus {
+    border-color: #007acc;
+
+    outline: none;
 }
 
 
 .modal-footer {
     display: flex;
-
     justify-content: flex-end;
 
-    gap: 10px;
+    gap: 8px;
 
-    margin-top: 24px;
+    margin-top: 22px;
 }
 
 
 .modal-footer button {
-    padding: 10px 16px;
+    height: 34px;
 
-    border: 1px solid #ccc;
+    padding: 0 14px;
 
-    border-radius: 6px;
+    background: #252526;
 
-    background: white;
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
+
+    color: #cccccc;
 
     cursor: pointer;
+
+    font-size: 12px;
+}
+
+
+.modal-footer button:hover {
+    background: #333333;
+
+    color: #ffffff;
 }
 
 
 .modal-footer button[type="submit"] {
-    background: #111;
+    background: #007acc;
 
-    color: white;
+    border-color: #007acc;
 
-    border-color: #111;
-}
-
-.file-explorer {
-    width: 260px;
-
-    min-width: 260px;
-
-    height: 100%;
-
-    display: flex;
-
-    flex-direction: column;
-
-    background: #1e1e1e;
-
-    color: #cccccc;
-
-    border-right: 1px solid #333;
+    color: #ffffff;
 }
 
 
-.explorer-header {
-    height: 42px;
+.modal-footer button[type="submit"]:hover {
+    background: #1685c9;
 
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    padding: 0 12px;
-
-    font-size: 12px;
-
-    font-weight: 600;
-
-    letter-spacing: 0.5px;
+    border-color: #1685c9;
 }
 
 
-.explorer-header button {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 4px;
-
-    border: none;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    cursor: pointer;
-}
-
-
-.explorer-project-name {
-    padding: 8px 12px;
-
-    font-size: 11px;
-
-    font-weight: 600;
-
-    color: #888;
-
-    border-bottom: 1px solid #333;
-}
-
-
-.explorer-tree {
-    flex: 1;
-
-    overflow-y: auto;
-
-    padding-top: 4px;
-}
-
-
-.file-tree-item {
-    width: 100%;
-
-    min-height: 30px;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    padding-top: 4px;
-
-    padding-bottom: 4px;
-
-    padding-right: 8px;
-
-    border: none;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    text-align: left;
-
-    font-size: 13px;
-
-    cursor: pointer;
-}
-
-
-.file-tree-item:hover {
-    background: #2a2d2e;
-}
-
-
-.file-tree-item span:last-child {
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-}
-
-
-.explorer-message {
-    padding: 20px 12px;
-
-    color: #777;
-
-    font-size: 13px;
-}
-
-
-.explorer-error {
-    margin: 10px;
-
-    padding: 10px;
-
-    border-radius: 4px;
-
-    background: #3b2020;
-
-    color: #ffaaaa;
-
-    font-size: 12px;
-}
+/* =========================================================
+   IDE PAGE
+   ========================================================= */
 
 .ide-page {
     width: 100vw;
-
     height: 100vh;
 
-    display: flex;
+    min-width: 0;
+    min-height: 0;
 
+    display: flex;
     flex-direction: column;
 
     overflow: hidden;
@@ -693,1158 +834,34 @@ body {
 }
 
 
-.ide-header {
-    height: 50px;
-
-    min-height: 50px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    padding: 0 14px;
-
-    background: #181818;
-
-    border-bottom: 1px solid #333;
-}
-
-
-.ide-header-left {
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-
-    font-size: 14px;
-
-    font-weight: 600;
-}
-
-
-.ide-back-button {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 5px;
-
-    border: none;
-
-    border-radius: 4px;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    cursor: pointer;
-}
-
-
-.ide-back-button:hover {
-    background: #2a2d2e;
-}
-
-
-.ide-project-info {
-    font-size: 12px;
-
-    color: #888;
-}
-
-
-.ide-workspace {
-    flex: 1;
-
-    min-height: 0;
-
-    display: flex;
-}
-
-
-.ide-editor-placeholder {
-    flex: 1;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    text-align: center;
-
-    background: #1e1e1e;
-
-    color: #888;
-}
-
-
-.ide-editor-placeholder h2 {
-    color: #cccccc;
-
-    margin-bottom: 10px;
-}
-
-
-.ide-editor-placeholder p {
-    margin: 6px 0;
-}
-
-.explorer-header-actions {
-    display: flex;
-
-    align-items: center;
-
-    gap: 2px;
-}
-
-
-.explorer-header-actions button {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    width: 26px;
-
-    height: 26px;
-
-    padding: 0;
-
-    border: none;
-
-    border-radius: 4px;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    cursor: pointer;
-}
-
-
-.explorer-header-actions button:hover {
-    background: #2a2d2e;
-}
-
-
-.file-tree-container {
-    position: relative;
-}
-
-
-.file-tree-row {
-    position: relative;
-
-    display: flex;
-
-    align-items: center;
-}
-
-
-.file-tree-item {
-    flex: 1;
-
-    min-width: 0;
-
-    min-height: 30px;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    padding-top: 4px;
-
-    padding-bottom: 4px;
-
-    padding-right: 4px;
-
-    border: none;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    text-align: left;
-
-    font-size: 13px;
-
-    cursor: pointer;
-}
-
-
-.file-tree-item:hover {
-    background: #2a2d2e;
-}
-
-
-.file-tree-menu-button {
-    width: 26px;
-
-    height: 26px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 0;
-
-    border: none;
-
-    border-radius: 4px;
-
-    background: transparent;
-
-    color: #888;
-
-    cursor: pointer;
-}
-
-
-.file-tree-menu-button:hover {
-    background: #333;
-
-    color: #fff;
-}
-
-
-.file-tree-menu {
-    position: absolute;
-
-    right: 8px;
-
-    top: 28px;
-
-    z-index: 100;
-
-    min-width: 130px;
-
-    padding: 4px;
-
-    background: #252526;
-
-    border: 1px solid #454545;
-
-    border-radius: 5px;
-
-    box-shadow:
-        0 6px 18px rgba(0, 0, 0, 0.4);
-}
-
-
-.file-tree-menu button {
-    width: 100%;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 9px;
-
-    padding: 8px 10px;
-
-    border: none;
-
-    border-radius: 4px;
-
-    background: transparent;
-
-    color: #cccccc;
-
-    text-align: left;
-
-    font-size: 12px;
-
-    cursor: pointer;
-
-    box-sizing: border-box;
-}
-
-
-.file-tree-menu button svg {
-    flex-shrink: 0;
-}
-
-
-.file-tree-menu button span {
-    flex: 1;
-}
-
-
-.file-tree-menu button:hover {
-    background: #094771;
-
-    color: #ffffff;
-}
-
-
-.file-tree-menu .delete-menu-item {
-    color: #ff8a8a;
-}
-
-
-.file-tree-menu .delete-menu-item:hover {
-    background: #5a2525;
-
-    color: #ffffff;
-}
-
-
-.file-tree-menu button:hover {
-    background: #094771;
-}
-
-
-.file-tree-menu .delete-menu-item {
-    color: #ff8a8a;
-}
-
-
-.explorer-message button {
-    margin-top: 8px;
-
-    padding: 7px 10px;
-
-    border: none;
-
-    border-radius: 4px;
-
-    background: #333;
-
-    color: #ccc;
-
-    cursor: pointer;
-}
-
-.ide-editor {
-    flex: 1;
-
-    min-width: 0;
-
-    min-height: 0;
-
-    display: flex;
-
-    flex-direction: column;
-
-    background: #1e1e1e;
-}
-
-
-.editor-tab {
-    height: 36px;
-
-    display: flex;
-
-    align-items: center;
-
-    padding: 0 14px;
-
-    background: #252526;
-
-    border-bottom: 1px solid #333;
-
-    color: #cccccc;
-
-    font-size: 13px;
-}
-
-
-.editor-area {
-    flex: 1;
-
-    min-height: 0;
-}
-
-
-.code-editor-container {
-    width: 100%;
-
-    height: 100%;
-}
-
-
-.editor-welcome {
-    flex: 1;
-
-    display: flex;
-
-    flex-direction: column;
-
-    align-items: center;
-
-    justify-content: center;
-
-    color: #888;
-
-    text-align: center;
-}
-
-
-.editor-welcome h2 {
-    margin-bottom: 8px;
-
-    color: #cccccc;
-}
-
-
-.editor-welcome p {
-    margin: 0;
-
-    font-size: 14px;
-}
-
-/* =========================================
-   Editor Tabs
-   ========================================= */
-
-.editor-tabs {
-    display: flex;
-
-    align-items: stretch;
-
-    height: 36px;
-
-    overflow-x: auto;
-
-    overflow-y: hidden;
-
-    background: #1e1e1e;
-
-    border-bottom: 1px solid #333;
-}
-
-
-.editor-tab {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    gap: 8px;
-
-    min-width: 120px;
-
-    max-width: 220px;
-
-    height: 36px;
-
-    padding: 0 8px 0 12px;
-
-    background: #252526;
-
-    border-right: 1px solid #333;
-
-    color: #999;
-
-    cursor: pointer;
-
-    font-size: 13px;
-}
-
-
-.editor-tab:hover {
-    background: #2d2d2d;
-}
-
-
-.editor-tab.active {
-    background: #1e1e1e;
-
-    color: #ffffff;
-
-    border-top: 1px solid #007acc;
-}
-
-
-.editor-tab-name {
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    min-width: 0;
-
-    overflow: hidden;
-
-    white-space: nowrap;
-
-    text-overflow: ellipsis;
-}
-
-
-.editor-tab-name span:last-child {
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-}
-
-
-.editor-tab-dirty {
-    font-size: 11px;
-
-    flex-shrink: 0;
-}
-
-
-.editor-tab-close {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    width: 20px;
-
-    height: 20px;
-
-    padding: 0;
-
-    border: none;
-
-    background: transparent;
-
-    color: #888;
-
-    cursor: pointer;
-
-    border-radius: 3px;
-
-    flex-shrink: 0;
-}
-
-
-.editor-tab-close:hover {
-    background: #444;
-
-    color: #fff;
-}
-
-
-/* =========================================
-   Editor Toolbar
-   ========================================= */
-
-.editor-toolbar {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    height: 36px;
-
-    padding: 0 10px 0 14px;
-
-    background: #252526;
-
-    border-bottom: 1px solid #333;
-
-    color: #ccc;
-
-    font-size: 12px;
-}
-
-
-.editor-toolbar-left {
-    display: flex;
-
-    align-items: center;
-
-    gap: 8px;
-
-    min-width: 0;
-}
-
-
-.editor-toolbar-left>span:first-child {
-    overflow: hidden;
-
-    white-space: nowrap;
-
-    text-overflow: ellipsis;
-}
-
-
-/* =========================================
-   Save Status
-   ========================================= */
-
-.editor-actions {
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-
-    margin-left: auto;
-}
-
-
-.editor-modified {
-    font-size: 11px;
-
-    color: #dcdcaa;
-}
-
-
-.editor-save-status {
-    font-size: 12px;
-
-    color: #888;
-}
-
-
-.editor-save-error {
-    max-width: 300px;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-
-    font-size: 12px;
-
-    color: #f48771;
-}
-
-
-.editor-save-button {
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    padding: 5px 10px;
-
-    border: 1px solid #444;
-
-    border-radius: 4px;
-
-    background: #2d2d2d;
-
-    color: #ccc;
-
-    cursor: pointer;
-
-    font-size: 12px;
-}
-
-
-.editor-save-button:hover:not(:disabled) {
-    background: #3a3a3a;
-}
-
-
-.editor-save-button:disabled {
-    opacity: 0.5;
-
-    cursor: not-allowed;
-}
-
-/* =========================================
-   PHASE 5 — TASK 11
-   Professional IDE Layout
-   ========================================= */
-
-
-/* =========================================
-   Main IDE Workspace
-   ========================================= */
-
-.ide-workspace {
-    flex: 1;
-
-    min-height: 0;
-
-    min-width: 0;
-
-    display: flex;
-
-    overflow: hidden;
-
-    background: #1e1e1e;
-}
-
-
-/* =========================================
-   Explorer Panel
-   ========================================= */
-
-.file-explorer {
-    flex: 0 0 260px;
-
-    width: 260px;
-
-    min-width: 220px;
-
-    max-width: 360px;
-
-    height: 100%;
-
-    overflow: hidden;
-}
-
-
-/* =========================================
-   Editor Container
-   ========================================= */
-
-.ide-editor {
-    flex: 1;
-
-    min-width: 0;
-
-    min-height: 0;
-
-    height: 100%;
-
-    display: flex;
-
-    flex-direction: column;
-
-    overflow: hidden;
-
-    background: #1e1e1e;
-}
-
-
-/* =========================================
-   Editor Tabs Container
-   ========================================= */
-
-.editor-tabs {
-    flex: 0 0 36px;
-
-    min-height: 36px;
-
-    display: flex;
-
-    align-items: stretch;
-
-    overflow-x: auto;
-
-    overflow-y: hidden;
-
-    background: #181818;
-
-    border-bottom: 1px solid #333;
-
-    scrollbar-width: thin;
-}
-
-
-.editor-tabs::-webkit-scrollbar {
-    height: 4px;
-}
-
-
-.editor-tabs::-webkit-scrollbar-thumb {
-    background: #555;
-}
-
-
-/* =========================================
-   Individual Editor Tab
-   ========================================= */
-
-.editor-tab {
-    flex: 0 0 auto;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    gap: 8px;
-
-    min-width: 120px;
-
-    max-width: 220px;
-
-    height: 36px;
-
-    padding: 0 8px 0 12px;
-
-    background: #252526;
-
-    border-right: 1px solid #333;
-
-    color: #999;
-
-    cursor: pointer;
-
-    font-size: 13px;
-
-    user-select: none;
-}
-
-
-.editor-tab:hover {
-    background: #2d2d2d;
-
-    color: #ddd;
-}
-
-
-.editor-tab.active {
-    background: #1e1e1e;
-
-    color: #fff;
-
-    border-top: 1px solid #007acc;
-}
-
-
-/* =========================================
-   Tab Name
-   ========================================= */
-
-.editor-tab-name {
-    flex: 1;
-
-    min-width: 0;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    overflow: hidden;
-}
-
-
-.editor-tab-name span:last-child {
-    min-width: 0;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-}
-
-
-/* =========================================
-   Unsaved Indicator
-   ========================================= */
-
-.editor-tab-dirty {
-    flex: 0 0 auto;
-
-    font-size: 10px;
-
-    color: #cccccc;
-}
-
-
-/* =========================================
-   Close Tab
-   ========================================= */
-
-.editor-tab-close {
-    flex: 0 0 20px;
-
-    width: 20px;
-
-    height: 20px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 0;
-
-    border: none;
-
-    border-radius: 3px;
-
-    background: transparent;
-
-    color: #888;
-
-    cursor: pointer;
-}
-
-
-.editor-tab-close:hover {
-    background: #444;
-
-    color: #fff;
-}
-
-
-/* =========================================
-   Editor Toolbar
-   ========================================= */
-
-.editor-toolbar {
-    flex: 0 0 36px;
-
-    min-height: 36px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    gap: 10px;
-
-    padding: 0 10px 0 14px;
-
-    background: #252526;
-
-    border-bottom: 1px solid #333;
-
-    color: #ccc;
-
-    font-size: 12px;
-
-    overflow: hidden;
-}
-
-
-.editor-toolbar-left {
-    min-width: 0;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 8px;
-
-    overflow: hidden;
-}
-
-
-.editor-toolbar-left>span:first-child {
-    min-width: 0;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-}
-
-
-/* =========================================
-   Editor Actions
-   ========================================= */
-
-.editor-actions {
-    flex: 0 0 auto;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-}
-
-
-.editor-save-status {
-    white-space: nowrap;
-
-    color: #888;
-
-    font-size: 12px;
-}
-
-
-.editor-modified {
-    white-space: nowrap;
-
-    color: #dcdcaa;
-
-    font-size: 11px;
-}
-
-
-.editor-save-error {
-    max-width: 260px;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    white-space: nowrap;
-
-    color: #f48771;
-
-    font-size: 12px;
-}
-
-
-/* =========================================
-   Save Button
-   ========================================= */
-
-.editor-save-button {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    gap: 6px;
-
-    min-width: 68px;
-
-    height: 26px;
-
-    padding: 0 9px;
-
-    border: 1px solid #444;
-
-    border-radius: 4px;
-
-    background: #2d2d2d;
-
-    color: #ccc;
-
-    cursor: pointer;
-
-    font-size: 12px;
-}
-
-
-.editor-save-button:hover:not(:disabled) {
-    background: #3a3a3a;
-
-    border-color: #666;
-
-    color: #fff;
-}
-
-
-.editor-save-button:disabled {
-    opacity: 0.5;
-
-    cursor: not-allowed;
-}
-
-
-/* =========================================
-   Monaco Editor Area
-   ========================================= */
-
-.editor-area {
-    flex: 1;
-
-    min-height: 0;
-
-    min-width: 0;
-
-    overflow: hidden;
-}
-
-
-.code-editor-container {
-    width: 100%;
-
-    height: 100%;
-
-    min-height: 0;
-}
-
-
-/* =========================================
-   Welcome Screen
-   ========================================= */
-
-.editor-welcome {
-    flex: 1;
-
-    min-height: 0;
-
-    display: flex;
-
-    flex-direction: column;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 40px;
-
-    background: #1e1e1e;
-
-    color: #888;
-
-    text-align: center;
-}
-
-
-.editor-welcome h2 {
-    margin: 0 0 10px;
-
-    color: #cccccc;
-
-    font-size: 22px;
-
-    font-weight: 500;
-}
-
-
-.editor-welcome p {
-    margin: 0;
-
-    color: #777;
-
-    font-size: 14px;
-}
-
-
-/* =========================================
-   IDE Header Improvement
-   ========================================= */
+/* =========================================================
+   IDE HEADER
+   ========================================================= */
 
 .ide-header {
     flex: 0 0 50px;
 
+    height: 50px;
     min-height: 50px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
 
     padding: 0 14px;
 
     background: #181818;
 
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid #2d2d2d;
 
     user-select: none;
 }
 
 
 .ide-header-left {
-    display: flex;
+    min-width: 0;
 
+    display: flex;
     align-items: center;
 
     gap: 10px;
@@ -1852,40 +869,42 @@ body {
     color: #cccccc;
 
     font-size: 14px;
-
     font-weight: 600;
 }
 
 
 .ide-project-info {
-    color: #888;
+    overflow: hidden;
+
+    max-width: 300px;
+
+    color: #777777;
 
     font-size: 12px;
+
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 
-/* =========================================
-   Back Button
-   ========================================= */
+/* =========================================================
+   BACK BUTTON
+   ========================================================= */
 
 .ide-back-button {
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
     width: 28px;
-
     height: 28px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
     padding: 0;
 
-    border: none;
-
-    border-radius: 4px;
-
     background: transparent;
+
+    border: none;
+    border-radius: 4px;
 
     color: #cccccc;
 
@@ -1900,87 +919,81 @@ body {
 }
 
 
-/* =========================================
-   Responsive — Smaller Screens
-   ========================================= */
-
-@media (max-width: 900px) {
-
-    .file-explorer {
-        flex-basis: 220px;
-
-        width: 220px;
-    }
-
-
-    .editor-tab {
-        min-width: 105px;
-
-        max-width: 180px;
-    }
-
-
-    .editor-save-status {
-        display: none;
-    }
-
+.ide-back-button:active {
+    background: #333333;
 }
 
 
-/* =========================================
-   Responsive — Mobile
-   ========================================= */
+/* =========================================================
+   MAIN IDE AREA
+   ========================================================= */
 
-@media (max-width: 650px) {
+/*
+   Layout:
 
-    .file-explorer {
-        flex-basis: 180px;
+   ┌─────────────┬─────────────────────────────┐
+   │             │ Editor                      │
+   │  Explorer   ├─────────────────────────────┤
+   │             │ Terminal                    │
+   └─────────────┴─────────────────────────────┘
+*/
 
-        width: 180px;
+.ide-main-area {
+    flex: 1;
 
-        min-width: 180px;
-    }
+    min-width: 0;
+    min-height: 0;
 
+    display: grid;
 
-    .ide-project-info {
-        display: none;
-    }
+    grid-template-columns:
+        225px minmax(0, 1fr);
 
+    grid-template-rows:
+        minmax(0, 1fr) 240px;
 
-    .editor-toolbar-left {
-        display: none;
-    }
+    grid-template-areas:
+        "explorer editor"
+        "explorer terminal";
 
-
-    .editor-actions {
-        width: 100%;
-
-        justify-content: flex-end;
-    }
-
+    overflow: hidden;
 }
 
-/* =========================================
-   PHASE 5 — TASK 11.2
-   Explorer Panel Improvements
-   ========================================= */
+
+/* =========================================================
+   WORKSPACE
+   ========================================================= */
+
+.ide-workspace {
+    display: contents;
+}
 
 
-/* =========================================
-   Explorer
-   ========================================= */
+/* =========================================================
+   EXPLORER PANEL
+   ========================================================= */
+
+.ide-workspace>*:first-child {
+    grid-area: explorer;
+
+    min-width: 0;
+    min-height: 0;
+
+    overflow: hidden;
+
+    border-right: 1px solid #2d2d2d;
+
+    background: #181818;
+}
+
 
 .file-explorer {
-    flex: 0 0 260px;
-
-    width: 260px;
-
-    min-width: 220px;
-
+    width: 100%;
     height: 100%;
 
-    display: flex;
+    min-width: 0;
 
+    display: flex;
     flex-direction: column;
 
     overflow: hidden;
@@ -1989,23 +1002,22 @@ body {
 
     color: #cccccc;
 
-    border-right: 1px solid #333;
+    border-right: 1px solid #2d2d2d;
 }
 
 
-/* =========================================
-   Explorer Header
-   ========================================= */
+/* =========================================================
+   EXPLORER HEADER
+   ========================================================= */
 
 .explorer-header {
     flex: 0 0 40px;
 
     height: 40px;
+    min-height: 40px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
 
     padding: 0 8px 0 12px;
@@ -2015,7 +1027,6 @@ body {
     color: #cccccc;
 
     font-size: 11px;
-
     font-weight: 600;
 
     letter-spacing: 0.8px;
@@ -2024,13 +1035,8 @@ body {
 }
 
 
-/* =========================================
-   Header Actions
-   ========================================= */
-
 .explorer-header-actions {
     display: flex;
-
     align-items: center;
 
     gap: 2px;
@@ -2039,24 +1045,20 @@ body {
 
 .explorer-header-actions button {
     width: 26px;
-
     height: 26px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
     padding: 0;
 
-    border: none;
-
-    border-radius: 4px;
-
     background: transparent;
 
-    color: #aaa;
+    border: none;
+    border-radius: 4px;
+
+    color: #999999;
 
     cursor: pointer;
 }
@@ -2065,7 +1067,7 @@ body {
 .explorer-header-actions button:hover {
     background: #2a2d2e;
 
-    color: #fff;
+    color: #ffffff;
 }
 
 
@@ -2076,59 +1078,58 @@ body {
 }
 
 
-/* =========================================
-   Project Label
-   ========================================= */
+/* =========================================================
+   EXPLORER PROJECT NAME
+   ========================================================= */
 
 .explorer-project-name {
     flex: 0 0 32px;
 
     height: 32px;
+    min-height: 32px;
 
     display: flex;
-
     align-items: center;
 
     padding: 0 12px;
 
     background: #1f1f1f;
 
-    border-top: 1px solid #2b2b2b;
+    border-top: 1px solid #242424;
+    border-bottom: 1px solid #2d2d2d;
 
-    border-bottom: 1px solid #333;
-
-    color: #888;
+    color: #777777;
 
     font-size: 10px;
-
     font-weight: 600;
 
     letter-spacing: 0.7px;
+
+    overflow: hidden;
+
+    text-overflow: ellipsis;
+    white-space: nowrap;
 
     user-select: none;
 }
 
 
-/* =========================================
-   Explorer Tree
-   ========================================= */
+/* =========================================================
+   EXPLORER TREE
+   ========================================================= */
 
 .explorer-tree {
     flex: 1;
 
+    min-width: 0;
     min-height: 0;
 
-    overflow-y: auto;
-
     overflow-x: hidden;
+    overflow-y: auto;
 
     padding: 4px 0;
 }
 
-
-/* =========================================
-   Scrollbar
-   ========================================= */
 
 .explorer-tree::-webkit-scrollbar {
     width: 8px;
@@ -2141,20 +1142,26 @@ body {
 
 
 .explorer-tree::-webkit-scrollbar-thumb {
-    background: #424242;
+    background: #3f3f3f;
 
     border-radius: 4px;
 }
 
 
 .explorer-tree::-webkit-scrollbar-thumb:hover {
-    background: #555;
+    background: #555555;
 }
 
 
-/* =========================================
-   Tree Container
-   ========================================= */
+.explorer-tree {
+    scrollbar-width: thin;
+    scrollbar-color: #3f3f3f #181818;
+}
+
+
+/* =========================================================
+   FILE TREE
+   ========================================================= */
 
 .file-tree-container {
     position: relative;
@@ -2163,26 +1170,16 @@ body {
 }
 
 
-/* =========================================
-   Tree Row
-   ========================================= */
-
 .file-tree-row {
     position: relative;
 
     width: 100%;
-
     min-height: 30px;
 
     display: flex;
-
     align-items: center;
 }
 
-
-/* =========================================
-   File / Folder Button
-   ========================================= */
 
 .file-tree-item {
     flex: 1;
@@ -2192,27 +1189,21 @@ body {
     height: 30px;
 
     display: flex;
-
     align-items: center;
 
     gap: 6px;
 
-    padding-top: 0;
-
-    padding-bottom: 0;
-
-    padding-right: 4px;
-
-    border: none;
+    padding: 0 4px 0 8px;
 
     background: transparent;
+
+    border: none;
 
     color: #cccccc;
 
     text-align: left;
 
     font-family: inherit;
-
     font-size: 13px;
 
     cursor: pointer;
@@ -2232,10 +1223,6 @@ body {
 }
 
 
-/* =========================================
-   Selected File
-   ========================================= */
-
 .file-tree-item.selected {
     background: #37373d;
 
@@ -2248,10 +1235,6 @@ body {
 }
 
 
-/* =========================================
-   File Name
-   ========================================= */
-
 .file-tree-item span:last-child {
     min-width: 0;
 
@@ -2263,32 +1246,28 @@ body {
 }
 
 
-/* =========================================
-   File Tree Actions
-   ========================================= */
+/* =========================================================
+   FILE TREE MENU BUTTON
+   ========================================================= */
 
 .file-tree-menu-button {
     flex: 0 0 26px;
 
     width: 26px;
-
     height: 26px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: center;
 
     padding: 0;
 
-    border: none;
-
-    border-radius: 4px;
-
     background: transparent;
 
-    color: #777;
+    border: none;
+    border-radius: 4px;
+
+    color: #777777;
 
     cursor: pointer;
 
@@ -2301,30 +1280,27 @@ body {
 }
 
 
-/* Show menu button when hovering row */
-
 .file-tree-row:hover .file-tree-menu-button {
     opacity: 1;
 }
 
 
 .file-tree-menu-button:hover {
-    background: #333;
+    background: #333333;
 
-    color: #fff;
+    color: #ffffff;
 }
 
 
-/* =========================================
-   Context Menu
-   ========================================= */
+/* =========================================================
+   FILE TREE CONTEXT MENU
+   ========================================================= */
 
 .file-tree-menu {
     position: absolute;
 
-    right: 8px;
-
     top: 30px;
+    right: 8px;
 
     z-index: 100;
 
@@ -2335,7 +1311,6 @@ body {
     background: #252526;
 
     border: 1px solid #454545;
-
     border-radius: 5px;
 
     box-shadow:
@@ -2345,27 +1320,25 @@ body {
 
 .file-tree-menu button {
     width: 100%;
-
     height: 30px;
 
     display: flex;
-
     align-items: center;
+
+    gap: 8px;
 
     padding: 0 10px;
 
-    border: none;
-
-    border-radius: 3px;
-
     background: transparent;
+
+    border: none;
+    border-radius: 3px;
 
     color: #cccccc;
 
     text-align: left;
 
     font-family: inherit;
-
     font-size: 12px;
 
     cursor: pointer;
@@ -2391,16 +1364,18 @@ body {
 }
 
 
-/* =========================================
-   Loading / Empty State
-   ========================================= */
+/* =========================================================
+   EXPLORER EMPTY / ERROR
+   ========================================================= */
 
 .explorer-message {
     padding: 24px 14px;
 
-    color: #777;
+    color: #777777;
 
     font-size: 12px;
+
+    line-height: 1.5;
 
     text-align: center;
 }
@@ -2416,13 +1391,12 @@ body {
 
     padding: 7px 12px;
 
-    border: 1px solid #444;
-
-    border-radius: 4px;
-
     background: #2d2d2d;
 
-    color: #ccc;
+    border: 1px solid #444444;
+    border-radius: 4px;
+
+    color: #cccccc;
 
     cursor: pointer;
 
@@ -2433,24 +1407,19 @@ body {
 .explorer-message button:hover {
     background: #3a3a3a;
 
-    color: #fff;
+    color: #ffffff;
 }
 
-
-/* =========================================
-   Explorer Error
-   ========================================= */
 
 .explorer-error {
     margin: 12px;
 
     padding: 10px;
 
-    border: 1px solid #5a2a2a;
-
-    border-radius: 4px;
-
     background: #3b2020;
+
+    border: 1px solid #5a2a2a;
+    border-radius: 4px;
 
     color: #ffaaaa;
 
@@ -2460,23 +1429,1072 @@ body {
 }
 
 
-/* =========================================
-   Mobile Explorer
-   ========================================= */
+/* =========================================================
+   EDITOR
+   ========================================================= */
+
+.ide-editor {
+    grid-area: editor;
+
+    min-width: 0;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow: hidden;
+
+    background: #1e1e1e;
+}
+
+
+/* =========================================================
+   EDITOR TABS
+   ========================================================= */
+
+.editor-tabs {
+    flex: 0 0 36px;
+
+    height: 36px;
+    min-height: 36px;
+
+    display: flex;
+    align-items: stretch;
+
+    overflow-x: auto;
+    overflow-y: hidden;
+
+    background: #181818;
+
+    border-bottom: 1px solid #2d2d2d;
+
+    scrollbar-width: thin;
+}
+
+
+.editor-tabs::-webkit-scrollbar {
+    height: 5px;
+}
+
+
+.editor-tabs::-webkit-scrollbar-track {
+    background: #181818;
+}
+
+
+.editor-tabs::-webkit-scrollbar-thumb {
+    background: #424242;
+
+    border-radius: 3px;
+}
+
+
+.editor-tabs::-webkit-scrollbar-thumb:hover {
+    background: #555555;
+}
+
+
+/* =========================================================
+   EDITOR TAB
+   ========================================================= */
+
+.editor-tab {
+    flex: 0 0 auto;
+
+    min-width: 120px;
+    max-width: 220px;
+
+    height: 36px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 8px;
+
+    padding: 0 8px 0 12px;
+
+    background: #252526;
+
+    border-right: 1px solid #2d2d2d;
+
+    color: #858585;
+
+    cursor: pointer;
+
+    font-size: 13px;
+
+    user-select: none;
+}
+
+
+.editor-tab:hover {
+    background: #2d2d2d;
+
+    color: #cccccc;
+}
+
+
+.editor-tab.active {
+    background: #1e1e1e;
+
+    color: #ffffff;
+
+    border-top: 1px solid #007acc;
+}
+
+
+.editor-tab-name {
+    flex: 1;
+
+    min-width: 0;
+
+    display: flex;
+    align-items: center;
+
+    gap: 6px;
+
+    overflow: hidden;
+}
+
+
+.editor-tab-name span:last-child {
+    min-width: 0;
+
+    overflow: hidden;
+
+    text-overflow: ellipsis;
+
+    white-space: nowrap;
+}
+
+
+.editor-tab-dirty {
+    flex: 0 0 auto;
+
+    color: #cccccc;
+
+    font-size: 10px;
+}
+
+
+/* =========================================================
+   TAB CLOSE BUTTON
+   ========================================================= */
+
+.editor-tab-close {
+    flex: 0 0 20px;
+
+    width: 20px;
+    height: 20px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0;
+
+    background: transparent;
+
+    border: none;
+    border-radius: 3px;
+
+    color: #858585;
+
+    cursor: pointer;
+}
+
+
+.editor-tab-close:hover {
+    background: #444444;
+
+    color: #ffffff;
+}
+
+
+/* =========================================================
+   EDITOR TOOLBAR
+   ========================================================= */
+
+.editor-toolbar {
+    flex: 0 0 36px;
+
+    height: 36px;
+    min-height: 36px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 10px;
+
+    padding: 0 10px 0 14px;
+
+    background: #1e1e1e;
+
+    border-bottom: 1px solid #2d2d2d;
+
+    color: #cccccc;
+
+    font-size: 12px;
+
+    overflow: hidden;
+}
+
+
+.editor-toolbar-left {
+    min-width: 0;
+
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+
+    overflow: hidden;
+}
+
+
+.editor-toolbar-left>span:first-child {
+    min-width: 0;
+
+    overflow: hidden;
+
+    text-overflow: ellipsis;
+
+    white-space: nowrap;
+}
+
+
+.editor-modified {
+    flex-shrink: 0;
+
+    color: #dcdcaa;
+
+    font-size: 11px;
+}
+
+
+/* =========================================================
+   EDITOR ACTIONS
+   ========================================================= */
+
+.editor-actions {
+    flex: 0 0 auto;
+
+    display: flex;
+    align-items: center;
+
+    gap: 10px;
+
+    margin-left: auto;
+}
+
+
+.editor-save-status {
+    color: #777777;
+
+    font-size: 11px;
+
+    white-space: nowrap;
+}
+
+
+.editor-save-error {
+    max-width: 300px;
+
+    overflow: hidden;
+
+    color: #f48771;
+
+    font-size: 11px;
+
+    text-overflow: ellipsis;
+
+    white-space: nowrap;
+}
+
+
+.editor-save-button {
+    min-width: 68px;
+    height: 26px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    gap: 6px;
+
+    padding: 0 9px;
+
+    background: #252526;
+
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+
+    color: #cccccc;
+
+    cursor: pointer;
+
+    font-size: 12px;
+}
+
+
+.editor-save-button:hover:not(:disabled) {
+    background: #333333;
+
+    border-color: #555555;
+
+    color: #ffffff;
+}
+
+
+.editor-save-button:disabled {
+    opacity: 0.45;
+
+    cursor: not-allowed;
+}
+
+
+/* =========================================================
+   MONACO EDITOR
+   ========================================================= */
+
+.editor-area {
+    flex: 1;
+
+    min-width: 0;
+    min-height: 0;
+
+    overflow: hidden;
+}
+
+
+.code-editor-container {
+    width: 100%;
+    height: 100%;
+
+    min-width: 0;
+    min-height: 0;
+}
+
+
+.editor-welcome {
+    flex: 1;
+
+    min-width: 0;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+
+    align-items: center;
+    justify-content: center;
+
+    padding: 40px;
+
+    background: #1e1e1e;
+
+    color: #777777;
+
+    text-align: center;
+}
+
+
+.editor-welcome h2 {
+    margin: 0 0 10px;
+
+    color: #cccccc;
+
+    font-size: 20px;
+    font-weight: 500;
+}
+
+
+.editor-welcome p {
+    margin: 0;
+
+    color: #777777;
+
+    font-size: 13px;
+}
+
+
+/* =========================================================
+   TERMINAL CONTAINER
+   ========================================================= */
+
+.ide-terminal {
+    grid-area: terminal;
+
+    min-width: 0;
+    min-height: 0;
+
+    overflow: hidden;
+
+    background: #0d0d0d;
+
+    border-top: 1px solid #3a3a3a;
+}
+
+
+/* =========================================================
+   TERMINAL
+   ========================================================= */
+
+.terminal {
+    width: 100%;
+    height: 100%;
+
+    min-width: 0;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+
+    background: #0d0d0d;
+
+    color: #cccccc;
+
+    font-family:
+        Consolas,
+        "Cascadia Mono",
+        "Courier New",
+        monospace;
+
+    font-size: 13px;
+}
+
+
+/* =========================================================
+   TERMINAL HEADER
+   ========================================================= */
+
+.terminal-header {
+    flex: 0 0 34px;
+
+    height: 34px;
+    min-height: 34px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    padding: 0 10px;
+
+    background: #181818;
+
+    border-bottom: 1px solid #2d2d2d;
+}
+
+
+.terminal-header>span {
+    color: #cccccc;
+
+    font-size: 11px;
+    font-weight: 600;
+
+    letter-spacing: 0.5px;
+
+    text-transform: uppercase;
+}
+
+
+.terminal-actions {
+    display: flex;
+    align-items: center;
+
+    gap: 6px;
+}
+
+
+.terminal-actions button {
+    height: 24px;
+
+    padding: 0 9px;
+
+    background: #252526;
+
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+
+    color: #cccccc;
+
+    cursor: pointer;
+
+    font-family: inherit;
+    font-size: 11px;
+}
+
+
+.terminal-actions button:hover:not(:disabled) {
+    background: #333333;
+
+    color: #ffffff;
+}
+
+
+.terminal-actions button:disabled {
+    opacity: 0.4;
+
+    cursor: not-allowed;
+}
+
+
+/* =========================================================
+   TERMINAL OUTPUT
+   ========================================================= */
+
+.terminal-output {
+    flex: 1;
+
+    min-width: 0;
+    min-height: 0;
+
+    padding: 8px 12px;
+
+    overflow-x: auto;
+    overflow-y: auto;
+
+    background: #0d0d0d;
+
+    scrollbar-width: thin;
+}
+
+
+.terminal-output::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+
+.terminal-output::-webkit-scrollbar-track {
+    background: #0d0d0d;
+}
+
+
+.terminal-output::-webkit-scrollbar-thumb {
+    background: #3f3f3f;
+
+    border-radius: 4px;
+}
+
+
+.terminal-output::-webkit-scrollbar-thumb:hover {
+    background: #555555;
+}
+
+
+.terminal-line {
+    min-height: 18px;
+
+    color: #d4d4d4;
+
+    line-height: 18px;
+
+    white-space: pre-wrap;
+
+    word-break: break-word;
+}
+
+
+/* =========================================================
+   TERMINAL INPUT
+   ========================================================= */
+
+.terminal-input-row {
+    flex: 0 0 auto;
+
+    min-height: 34px;
+
+    display: flex;
+    align-items: center;
+
+    padding: 5px 12px;
+
+    background: #0d0d0d;
+
+    border-top: 1px solid #242424;
+}
+
+
+.terminal-prompt {
+    flex-shrink: 0;
+
+    margin-right: 8px;
+
+    color: #4ec9b0;
+
+    font-family: inherit;
+
+    font-size: 13px;
+}
+
+
+.terminal-input-row input {
+    flex: 1;
+
+    min-width: 0;
+
+    height: 24px;
+
+    padding: 0;
+
+    background: transparent;
+
+    border: none;
+
+    outline: none;
+
+    color: #f1f1f1;
+
+    font-family: inherit;
+
+    font-size: 13px;
+}
+
+
+.terminal-input-row input::placeholder {
+    color: #555555;
+}
+
+
+.terminal-input-row input:disabled {
+    opacity: 0.55;
+
+    cursor: not-allowed;
+}
+
+
+/* =========================================================
+   GENERAL SCROLLBARS
+   ========================================================= */
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+
+::-webkit-scrollbar-track {
+    background: #181818;
+}
+
+
+::-webkit-scrollbar-thumb {
+    background: #3f3f3f;
+
+    border-radius: 4px;
+}
+
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555555;
+}
+
+
+/* =========================================================
+   COUNTER / GENERIC UI
+   ========================================================= */
+
+.counter {
+    display: inline-block;
+
+    margin-bottom: 24px;
+
+    padding: 5px 10px;
+
+    background: #252526;
+
+    border: 2px solid transparent;
+    border-radius: 5px;
+
+    color: #4ec9b0;
+
+    font-size: 16px;
+
+    transition: border-color 0.2s ease;
+}
+
+
+.counter:hover {
+    border-color: #007acc;
+}
+
+
+.counter:focus-visible {
+    outline: 2px solid #007acc;
+
+    outline-offset: 2px;
+}
+
+
+/* =========================================================
+   LEGACY / LANDING PAGE SUPPORT
+   ========================================================= */
+
+.hero {
+    position: relative;
+}
+
+
+.hero .base,
+.hero .framework,
+.hero .vite {
+    inset-inline: 0;
+
+    margin: 0 auto;
+}
+
+
+.hero .base {
+    position: relative;
+
+    z-index: 0;
+
+    width: 170px;
+}
+
+
+.hero .framework,
+.hero .vite {
+    position: absolute;
+}
+
+
+.hero .framework {
+    z-index: 1;
+
+    top: 34px;
+
+    height: 28px;
+
+    transform:
+        perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg) scale(1.4);
+}
+
+
+.hero .vite {
+    z-index: 0;
+
+    top: 107px;
+
+    width: auto;
+    height: 26px;
+
+    transform:
+        perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg) scale(0.8);
+}
+
+
+#center {
+    flex-grow: 1;
+
+    display: flex;
+    flex-direction: column;
+
+    align-items: center;
+    justify-content: center;
+
+    gap: 25px;
+}
+
+
+#next-steps {
+    display: flex;
+
+    border-top: 1px solid #2d2d2d;
+
+    text-align: left;
+}
+
+
+#next-steps>div {
+    flex: 1 1 0;
+
+    padding: 32px;
+}
+
+
+#next-steps .icon {
+    width: 22px;
+    height: 22px;
+
+    margin-bottom: 16px;
+}
+
+
+#docs {
+    border-right: 1px solid #2d2d2d;
+}
+
+
+#next-steps ul {
+    display: flex;
+
+    gap: 8px;
+
+    margin: 32px 0 0;
+
+    padding: 0;
+
+    list-style: none;
+}
+
+
+#next-steps ul .logo {
+    height: 18px;
+}
+
+
+#next-steps ul a {
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+
+    padding: 6px 12px;
+
+    background: #252526;
+
+    border-radius: 6px;
+
+    color: #cccccc;
+
+    font-size: 14px;
+
+    text-decoration: none;
+
+    transition: box-shadow 0.2s ease;
+}
+
+
+#next-steps ul a:hover {
+    box-shadow:
+        0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+
+#next-steps .button-icon {
+    width: 18px;
+    height: 18px;
+}
+
+
+#spacer {
+    height: 88px;
+
+    border-top: 1px solid #2d2d2d;
+}
+
+
+.ticks {
+    position: relative;
+
+    width: 100%;
+}
+
+
+.ticks::before,
+.ticks::after {
+    content: "";
+
+    position: absolute;
+
+    top: -4.5px;
+
+    border: 5px solid transparent;
+}
+
+
+.ticks::before {
+    left: 0;
+
+    border-left-color: #2d2d2d;
+}
+
+
+.ticks::after {
+    right: 0;
+
+    border-right-color: #2d2d2d;
+}
+
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
+
+@media (max-width: 1000px) {
+
+    .ide-main-area {
+        grid-template-columns: 210px minmax(0, 1fr);
+    }
+
+    .file-explorer {
+        width: 100%;
+    }
+
+    .projects-content {
+        padding: 24px;
+    }
+}
+
+
+@media (max-width: 800px) {
+
+    .ide-main-area {
+        grid-template-columns: 190px minmax(0, 1fr);
+
+        grid-template-rows:
+            minmax(0, 1fr) 220px;
+    }
+
+    .editor-tab {
+        min-width: 105px;
+        max-width: 180px;
+    }
+
+    .editor-save-status {
+        display: none;
+    }
+
+    .editor-save-error {
+        max-width: 180px;
+    }
+
+    .dashboard-header {
+        padding: 0 20px;
+    }
+
+    .projects-toolbar {
+        align-items: flex-start;
+
+        flex-direction: column;
+    }
+}
+
 
 @media (max-width: 650px) {
 
-    .file-explorer {
-        flex-basis: 190px;
-
-        width: 190px;
-
-        min-width: 190px;
+    .ide-header {
+        padding: 0 10px;
     }
 
+    .ide-project-info {
+        display: none;
+    }
+
+    .ide-main-area {
+        grid-template-columns: 180px minmax(0, 1fr);
+
+        grid-template-rows:
+            minmax(0, 1fr) 200px;
+    }
+
+    .file-explorer {
+        width: 100%;
+    }
 
     .file-tree-menu-button {
         opacity: 1;
     }
 
+    .editor-toolbar-left {
+        display: none;
+    }
+
+    .editor-actions {
+        width: 100%;
+
+        justify-content: flex-end;
+    }
+
+    .editor-save-error {
+        display: none;
+    }
+
+    .editor-tab {
+        min-width: 100px;
+    }
+
+    .dashboard-header {
+        height: 58px;
+
+        padding: 0 14px;
+    }
+
+    .projects-content {
+        padding: 20px 14px;
+    }
+
+    .projects-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .auth-card {
+        padding: 24px;
+    }
+}
+
+
+@media (max-width: 480px) {
+
+    .ide-main-area {
+        grid-template-columns: 160px minmax(0, 1fr);
+
+        grid-template-rows:
+            minmax(0, 1fr) 180px;
+    }
+
+    .explorer-header {
+        padding-left: 8px;
+    }
+
+    .explorer-project-name {
+        padding-left: 8px;
+    }
+
+    .file-tree-item {
+        padding-left: 5px;
+
+        font-size: 12px;
+    }
+
+    .terminal-output {
+        padding: 6px 8px;
+    }
+
+    .terminal-input-row {
+        padding: 4px 8px;
+    }
+
+    .terminal-prompt {
+        margin-right: 5px;
+    }
+
+    .terminal {
+        font-size: 12px;
+    }
+
+    .terminal-input-row input {
+        font-size: 12px;
+    }
+}
+
+
+/* =========================================================
+   REDUCED MOTION
+   ========================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
 }
