@@ -1,102 +1,102 @@
 * {
-  box-sizing: border-box;
+    box-sizing: border-box;
 }
 
 html,
 body,
 #root {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
 }
 
 body {
-  font-family: Arial, sans-serif;
+    font-family: Arial, sans-serif;
 }
 
 .auth-page {
-  width: 100%;
-  min-height: 100vh;
+    width: 100%;
+    min-height: 100vh;
 
-  display: flex;
-  align-items: center;
-  justify-content: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-  background: #f5f5f5;
+    background: #f5f5f5;
 }
 
 .auth-card {
-  width: 400px;
+    width: 400px;
 
-  padding: 32px;
+    padding: 32px;
 
-  background: white;
+    background: white;
 
-  border-radius: 8px;
+    border-radius: 8px;
 
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.08);
+    box-shadow:
+        0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
 .auth-card h1 {
-  margin-top: 0;
+    margin-top: 0;
 }
 
 .auth-card h2 {
-  margin-bottom: 24px;
+    margin-bottom: 24px;
 }
 
 .form-group {
-  margin-bottom: 18px;
+    margin-bottom: 18px;
 }
 
 .form-group label {
-  display: block;
+    display: block;
 
-  margin-bottom: 6px;
+    margin-bottom: 6px;
 
-  font-weight: 600;
+    font-weight: 600;
 }
 
 .form-group input {
-  width: 100%;
+    width: 100%;
 
-  padding: 10px 12px;
+    padding: 10px 12px;
 
-  border: 1px solid #ccc;
+    border: 1px solid #ccc;
 
-  border-radius: 4px;
+    border-radius: 4px;
 
-  font-size: 14px;
+    font-size: 14px;
 }
 
 .auth-card button {
-  width: 100%;
+    width: 100%;
 
-  padding: 11px;
+    padding: 11px;
 
-  border: none;
+    border: none;
 
-  border-radius: 4px;
+    border-radius: 4px;
 
-  cursor: pointer;
+    cursor: pointer;
 
-  font-size: 15px;
+    font-size: 15px;
 }
 
 .auth-card button:disabled {
-  cursor: not-allowed;
+    cursor: not-allowed;
 }
 
 .auth-error {
-  margin-bottom: 16px;
+    margin-bottom: 16px;
 
-  padding: 10px;
+    padding: 10px;
 
-  border-radius: 4px;
+    border-radius: 4px;
 
-  background: #ffe5e5;
+    background: #ffe5e5;
 }
 
 .projects-page {
@@ -945,11 +945,17 @@ body {
 .file-tree-menu button {
     width: 100%;
 
-    display: block;
+    display: flex;
+
+    align-items: center;
+
+    gap: 9px;
 
     padding: 8px 10px;
 
     border: none;
+
+    border-radius: 4px;
 
     background: transparent;
 
@@ -960,6 +966,37 @@ body {
     font-size: 12px;
 
     cursor: pointer;
+
+    box-sizing: border-box;
+}
+
+
+.file-tree-menu button svg {
+    flex-shrink: 0;
+}
+
+
+.file-tree-menu button span {
+    flex: 1;
+}
+
+
+.file-tree-menu button:hover {
+    background: #094771;
+
+    color: #ffffff;
+}
+
+
+.file-tree-menu .delete-menu-item {
+    color: #ff8a8a;
+}
+
+
+.file-tree-menu .delete-menu-item:hover {
+    background: #5a2525;
+
+    color: #ffffff;
 }
 
 
@@ -1234,7 +1271,7 @@ body {
 }
 
 
-.editor-toolbar-left > span:first-child {
+.editor-toolbar-left>span:first-child {
     overflow: hidden;
 
     white-space: nowrap;
@@ -1601,7 +1638,7 @@ body {
 }
 
 
-.editor-toolbar-left > span:first-child {
+.editor-toolbar-left>span:first-child {
     min-width: 0;
 
     overflow: hidden;

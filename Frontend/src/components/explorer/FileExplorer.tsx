@@ -16,6 +16,10 @@ import {
     Plus,
     RefreshCw,
     MoreVertical,
+    FilePlus,
+    FolderPlus,
+    Pencil,
+    Trash2,
 } from "lucide-react";
 
 import {
@@ -27,11 +31,12 @@ import type {
 } from "../../types/file";
 
 
-// =========================================
-// Props
-// =========================================
+// ============================================================
+// FileExplorer Props
+// ============================================================
 
 interface FileExplorerProps {
+
     projectId: number;
 
     onFileSelect?: (
@@ -56,16 +61,15 @@ interface FileExplorerProps {
 }
 
 
-// =========================================
-// File Tree Item Props
-// =========================================
+// ============================================================
+// FileTreeItem Props
+// ============================================================
 
 interface FileTreeItemProps {
+
     node: FileTreeNode;
 
     level: number;
-
-    selectedFileId?: number | null;
 
     onFileSelect?: (
         file: FileTreeNode
@@ -89,14 +93,25 @@ interface FileTreeItemProps {
 }
 
 
-// =========================================
+// ============================================================
+// Context Menu State
+// ============================================================
+
+interface ContextMenuPosition {
+
+    x: number;
+
+    y: number;
+}
+
+
+// ============================================================
 // File Tree Item
-// =========================================
+// ============================================================
 
 function FileTreeItem({
     node,
     level,
-    selectedFileId,
     onFileSelect,
     onCreateFile,
     onCreateFolder,
@@ -116,6 +131,14 @@ function FileTreeItem({
     ] = useState(false);
 
 
+    const [
+        menuPosition,
+        setMenuPosition,
+    ] = useState<ContextMenuPosition | null>(
+        null
+    );
+
+
     const isFolder =
         node.type === "folder";
 
@@ -128,13 +151,120 @@ function FileTreeItem({
         );
 
 
-    const isSelected =
-        selectedFileId === node.id;
+    // ========================================================
+    // Close Context Menu
+    // ========================================================
+
+    function closeMenu() {
+
+        setShowMenu(false);
+
+        setMenuPosition(null);
+    }
 
 
-    // =====================================
-    // Tree Item Click
-    // =====================================
+    // ========================================================
+    // Calculate Menu Position
+    // ========================================================
+
+    function calculateMenuPosition(
+        x: number,
+        y: number
+    ): ContextMenuPosition {
+
+        const menuWidth = 170;
+
+        const menuHeight =
+            isFolder
+                ? 180
+                : 130;
+
+
+        const padding = 8;
+
+
+        let finalX = x;
+
+        let finalY = y;
+
+
+        if (
+            finalX + menuWidth >
+            window.innerWidth
+        ) {
+
+            finalX =
+                window.innerWidth -
+                menuWidth -
+                padding;
+        }
+
+
+        if (
+            finalY + menuHeight >
+            window.innerHeight
+        ) {
+
+            finalY =
+                window.innerHeight -
+                menuHeight -
+                padding;
+        }
+
+
+        if (finalX < padding) {
+
+            finalX = padding;
+        }
+
+
+        if (finalY < padding) {
+
+            finalY = padding;
+        }
+
+
+        return {
+            x: finalX,
+            y: finalY,
+        };
+    }
+
+
+    // ========================================================
+    // Open Context Menu
+    // ========================================================
+
+    function openContextMenu(
+        x: number,
+        y: number
+    ) {
+
+        console.log(
+            "Opening context menu:",
+            node
+        );
+
+
+        const position =
+            calculateMenuPosition(
+                x,
+                y
+            );
+
+
+        setMenuPosition(
+            position
+        );
+
+
+        setShowMenu(true);
+    }
+
+
+    // ========================================================
+    // Normal Tree Item Click
+    // ========================================================
 
     function handleClick() {
 
@@ -147,53 +277,101 @@ function FileTreeItem({
         if (isFolder) {
 
             setIsExpanded(
-                current => !current
+                current =>
+                    !current
             );
 
             return;
         }
 
 
-        onFileSelect?.(node);
+        onFileSelect?.(
+            node
+        );
     }
 
 
-    // =====================================
-    // Menu Click
-    // =====================================
+    // ========================================================
+    // Right Click
+    // ========================================================
 
-    function handleMenuClick(
+    function handleContextMenu(
         event: MouseEvent
     ) {
+
+        event.preventDefault();
 
         event.stopPropagation();
 
 
         console.log(
-            "Menu clicked:",
-            node.name
+            "Right-clicked:",
+            node
         );
 
 
-        setShowMenu(
-            current => !current
+        openContextMenu(
+            event.clientX,
+            event.clientY
         );
     }
 
 
-    // =====================================
+    // ========================================================
+    // Three Dot Menu
+    // ========================================================
+
+    function handleMenuClick(
+        event: MouseEvent
+    ) {
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+
+        console.log(
+            "Three-dot menu clicked:",
+            node.name
+        );
+
+
+        if (showMenu) {
+
+            closeMenu();
+
+            return;
+        }
+
+
+        const target =
+            event.currentTarget as HTMLElement;
+
+
+        const rect =
+            target.getBoundingClientRect();
+
+
+        openContextMenu(
+            rect.right - 10,
+            rect.bottom + 4
+        );
+    }
+
+
+    // ========================================================
     // Create File
-    // =====================================
+    // ========================================================
 
     function handleCreateFile() {
 
         console.log(
-            "CREATE FILE clicked. Parent:",
+            "CREATE FILE:",
             node.id
         );
 
 
-        setShowMenu(false);
+        closeMenu();
 
 
         onCreateFile?.(
@@ -202,19 +380,19 @@ function FileTreeItem({
     }
 
 
-    // =====================================
+    // ========================================================
     // Create Folder
-    // =====================================
+    // ========================================================
 
     function handleCreateFolder() {
 
         console.log(
-            "CREATE FOLDER clicked. Parent:",
+            "CREATE FOLDER:",
             node.id
         );
 
 
-        setShowMenu(false);
+        closeMenu();
 
 
         onCreateFolder?.(
@@ -223,19 +401,19 @@ function FileTreeItem({
     }
 
 
-    // =====================================
+    // ========================================================
     // Rename
-    // =====================================
+    // ========================================================
 
     function handleRename() {
 
         console.log(
-            "RENAME clicked:",
+            "RENAME:",
             node
         );
 
 
-        setShowMenu(false);
+        closeMenu();
 
 
         onRename?.(
@@ -244,19 +422,19 @@ function FileTreeItem({
     }
 
 
-    // =====================================
+    // ========================================================
     // Delete
-    // =====================================
+    // ========================================================
 
     function handleDelete() {
 
         console.log(
-            "DELETE clicked:",
+            "DELETE:",
             node
         );
 
 
-        setShowMenu(false);
+        closeMenu();
 
 
         onDelete?.(
@@ -265,12 +443,17 @@ function FileTreeItem({
     }
 
 
-    // =====================================
-    // Render
-    // =====================================
-
     return (
-        <div className="file-tree-container">
+        <div
+            className="file-tree-container"
+            onContextMenu={
+                handleContextMenu
+            }
+        >
+
+            {/* =================================================
+                Tree Row
+            ================================================= */}
 
             <div
                 className="file-tree-row"
@@ -280,29 +463,19 @@ function FileTreeItem({
                 }}
             >
 
-                {/* =========================
-                    File / Folder
-                   ========================= */}
+                {/* =============================================
+                    File / Folder Button
+                ============================================= */}
 
                 <button
                     type="button"
-                    className={
-                        `file-tree-item ${
-                            isSelected
-                                ? "selected"
-                                : ""
-                        }`
-                    }
+                    className="file-tree-item"
                     onClick={
                         handleClick
                     }
-                    title={
-                        node.path ??
-                        node.name
-                    }
                 >
 
-                    {/* Expand / Collapse Icon */}
+                    {/* Folder Expand Icon */}
 
                     {isFolder ? (
 
@@ -312,14 +485,12 @@ function FileTreeItem({
 
                                 <ChevronDown
                                     size={16}
-                                    strokeWidth={1.8}
                                 />
 
                             ) : (
 
                                 <ChevronRight
                                     size={16}
-                                    strokeWidth={1.8}
                                 />
 
                             )
@@ -329,7 +500,6 @@ function FileTreeItem({
                             <span
                                 style={{
                                     width: 16,
-                                    flexShrink: 0,
                                 }}
                             />
 
@@ -340,7 +510,6 @@ function FileTreeItem({
                         <span
                             style={{
                                 width: 16,
-                                flexShrink: 0,
                             }}
                         />
 
@@ -355,14 +524,12 @@ function FileTreeItem({
 
                             <FolderOpen
                                 size={17}
-                                strokeWidth={1.8}
                             />
 
                         ) : (
 
                             <Folder
                                 size={17}
-                                strokeWidth={1.8}
                             />
 
                         )
@@ -371,13 +538,12 @@ function FileTreeItem({
 
                         <File
                             size={17}
-                            strokeWidth={1.8}
                         />
 
                     )}
 
 
-                    {/* Name */}
+                    {/* File Name */}
 
                     <span>
                         {node.name}
@@ -386,17 +552,21 @@ function FileTreeItem({
                 </button>
 
 
-                {/* =========================
-                    More Menu Button
-                   ========================= */}
+                {/* =============================================
+                    Three Dot Button
+                ============================================= */}
 
                 <button
                     type="button"
                     className="file-tree-menu-button"
+                    title="More actions"
+                    onMouseDown={
+                        event =>
+                            event.stopPropagation()
+                    }
                     onClick={
                         handleMenuClick
                     }
-                    title="More actions"
                 >
 
                     <MoreVertical
@@ -406,86 +576,135 @@ function FileTreeItem({
                 </button>
 
 
-                {/* =========================
+                {/* =============================================
                     Context Menu
-                   ========================= */}
+                ============================================= */}
 
-                {showMenu && (
+                {showMenu &&
+                    menuPosition && (
 
-                    <div
-                        className="file-tree-menu"
-                        onClick={
-                            event =>
-                                event.stopPropagation()
-                        }
-                    >
-
-                        {/* New File */}
-
-                        {isFolder && (
-
-                            <button
-                                type="button"
-                                onClick={
-                                    handleCreateFile
-                                }
-                            >
-                                New File
-                            </button>
-
-                        )}
-
-
-                        {/* New Folder */}
-
-                        {isFolder && (
-
-                            <button
-                                type="button"
-                                onClick={
-                                    handleCreateFolder
-                                }
-                            >
-                                New Folder
-                            </button>
-
-                        )}
-
-
-                        {/* Rename */}
-
-                        <button
-                            type="button"
-                            onClick={
-                                handleRename
+                        <div
+                            className="file-tree-menu"
+                            style={{
+                                position: "fixed",
+                                top:
+                                    menuPosition.y,
+                                left:
+                                    menuPosition.x,
+                                right: "auto",
+                            }}
+                            onContextMenu={
+                                event =>
+                                    event.preventDefault()
+                            }
+                            onMouseDown={
+                                event =>
+                                    event.stopPropagation()
                             }
                         >
+
+                            {/* =====================================
+                            Folder Actions
+                        ===================================== */}
+
+                            {isFolder && (
+
+                                <>
+
+                                    <button
+                                        type="button"
+                                        onClick={
+                                            handleCreateFile
+                                        }
+                                    >
+
+                                        <FilePlus
+                                            size={15}
+                                        />
+
+                                        <span>
+                                            New File
+                                        </span>
+
+                                    </button>
+
+
+                                    <button
+                                        type="button"
+                                        onClick={
+                                            handleCreateFolder
+                                        }
+                                    >
+
+                                        <FolderPlus
+                                            size={15}
+                                        />
+
+                                        <span>
+                                            New Folder
+                                        </span>
+
+                                    </button>
+
+                                </>
+
+                            )}
+
+
+                            {/* =====================================
                             Rename
-                        </button>
+                        ===================================== */}
+
+                            <button
+                                type="button"
+                                onClick={
+                                    handleRename
+                                }
+                            >
+
+                                <Pencil
+                                    size={15}
+                                />
+
+                                <span>
+                                    Rename
+                                </span>
+
+                            </button>
 
 
-                        {/* Delete */}
-
-                        <button
-                            type="button"
-                            className="delete-menu-item"
-                            onClick={
-                                handleDelete
-                            }
-                        >
+                            {/* =====================================
                             Delete
-                        </button>
+                        ===================================== */}
 
-                    </div>
+                            <button
+                                type="button"
+                                className="delete-menu-item"
+                                onClick={
+                                    handleDelete
+                                }
+                            >
 
-                )}
+                                <Trash2
+                                    size={15}
+                                />
+
+                                <span>
+                                    Delete
+                                </span>
+
+                            </button>
+
+                        </div>
+
+                    )}
 
             </div>
 
 
-            {/* =========================
+            {/* =================================================
                 Children
-               ========================= */}
+            ================================================= */}
 
             {isFolder &&
                 isExpanded &&
@@ -507,10 +726,6 @@ function FileTreeItem({
 
                                     level={
                                         level + 1
-                                    }
-
-                                    selectedFileId={
-                                        selectedFileId
                                     }
 
                                     onFileSelect={
@@ -546,9 +761,9 @@ function FileTreeItem({
 }
 
 
-// =========================================
-// File Explorer
-// =========================================
+// ============================================================
+// Main File Explorer
+// ============================================================
 
 export default function FileExplorer({
     projectId,
@@ -577,17 +792,9 @@ export default function FileExplorer({
     ] = useState("");
 
 
-    const [
-        selectedFileId,
-        setSelectedFileId,
-    ] = useState<number | null>(
-        null
-    );
-
-
-    // =====================================
-    // Load File Tree
-    // =====================================
+    // ========================================================
+    // Load Tree
+    // ========================================================
 
     async function loadTree() {
 
@@ -616,7 +823,9 @@ export default function FileExplorer({
             );
 
 
-            setTree(data);
+            setTree(
+                data
+            );
 
         } catch (error: any) {
 
@@ -634,30 +843,134 @@ export default function FileExplorer({
         } finally {
 
             setIsLoading(false);
-
         }
     }
 
 
-    // =====================================
-    // Load Tree On Project Change
-    // =====================================
+    // ========================================================
+    // Initial Load
+    // ========================================================
 
     useEffect(() => {
-
-        setSelectedFileId(
-            null
-        );
-
 
         loadTree();
 
     }, [projectId]);
 
 
-    // =====================================
-    // New File From Explorer Header
-    // =====================================
+    // ========================================================
+    // Close Menus Globally
+    // ========================================================
+
+    useEffect(() => {
+
+        function handleDocumentMouseDown(
+            event: globalThis.MouseEvent
+        ) {
+
+            const target =
+                event.target as HTMLElement;
+
+
+            if (
+                target.closest(
+                    ".file-tree-menu"
+                )
+            ) {
+
+                return;
+            }
+
+
+            if (
+                target.closest(
+                    ".file-tree-menu-button"
+                )
+            ) {
+
+                return;
+            }
+
+
+            const menus =
+                document.querySelectorAll(
+                    ".file-tree-menu"
+                );
+
+
+            menus.forEach(
+                menu => {
+
+                    (
+                        menu as HTMLElement
+                    ).style.display =
+                        "none";
+
+                }
+            );
+        }
+
+
+        function handleEscape(
+            event: KeyboardEvent
+        ) {
+
+            if (
+                event.key === "Escape"
+            ) {
+
+                const menus =
+                    document.querySelectorAll(
+                        ".file-tree-menu"
+                    );
+
+
+                menus.forEach(
+                    menu => {
+
+                        (
+                            menu as HTMLElement
+                        ).style.display =
+                            "none";
+
+                    }
+                );
+            }
+        }
+
+
+        document.addEventListener(
+            "mousedown",
+            handleDocumentMouseDown
+        );
+
+
+        document.addEventListener(
+            "keydown",
+            handleEscape
+        );
+
+
+        return () => {
+
+            document.removeEventListener(
+                "mousedown",
+                handleDocumentMouseDown
+            );
+
+
+            document.removeEventListener(
+                "keydown",
+                handleEscape
+            );
+        };
+
+    }, []);
+
+
+    // ========================================================
+    // Top New File
+    // ========================================================
 
     function handleNewFile() {
 
@@ -667,7 +980,7 @@ export default function FileExplorer({
 
 
         console.log(
-            "onCreateFile function:",
+            "onCreateFile:",
             onCreateFile
         );
 
@@ -682,45 +995,22 @@ export default function FileExplorer({
         }
 
 
-        onCreateFile(null);
-    }
-
-
-    // =====================================
-    // File Selection
-    // =====================================
-
-    function handleFileSelect(
-        file: FileTreeNode
-    ) {
-
-        console.log(
-            "Explorer selected file:",
-            file
-        );
-
-
-        setSelectedFileId(
-            file.id
-        );
-
-
-        onFileSelect?.(
-            file
+        onCreateFile(
+            null
         );
     }
 
 
-    // =====================================
+    // ========================================================
     // Render
-    // =====================================
+    // ========================================================
 
     return (
         <aside className="file-explorer">
 
-            {/* =================================
+            {/* =================================================
                 Explorer Header
-               ================================= */}
+            ================================================= */}
 
             <div className="explorer-header">
 
@@ -752,7 +1042,7 @@ export default function FileExplorer({
 
                     <button
                         type="button"
-                        title="Refresh Explorer"
+                        title="Refresh"
                         onClick={
                             loadTree
                         }
@@ -772,22 +1062,20 @@ export default function FileExplorer({
             </div>
 
 
-            {/* =================================
-                Project Section
-               ================================= */}
+            {/* =================================================
+                Project Files Header
+            ================================================= */}
 
             <div className="explorer-project-name">
 
-                <span>
-                    PROJECT FILES
-                </span>
+                PROJECT FILES
 
             </div>
 
 
-            {/* =================================
+            {/* =================================================
                 File Tree
-               ================================= */}
+            ================================================= */}
 
             <div className="explorer-tree">
 
@@ -808,17 +1096,6 @@ export default function FileExplorer({
                     <div className="explorer-error">
 
                         {error}
-
-                        <br />
-
-                        <button
-                            type="button"
-                            onClick={
-                                loadTree
-                            }
-                        >
-                            Retry
-                        </button>
 
                     </div>
 
@@ -864,12 +1141,8 @@ export default function FileExplorer({
 
                                 level={0}
 
-                                selectedFileId={
-                                    selectedFileId
-                                }
-
                                 onFileSelect={
-                                    handleFileSelect
+                                    onFileSelect
                                 }
 
                                 onCreateFile={
