@@ -1,3 +1,7 @@
+/* =========================================================
+   VITE DEFAULT / BASE STYLES
+   ========================================================= */
+
 .counter {
   font-size: 16px;
   padding: 5px 10px;
@@ -169,7 +173,7 @@
 
   &::before,
   &::after {
-    content: '';
+    content: "";
     position: absolute;
     top: -4.5px;
     border: 5px solid transparent;
@@ -186,14 +190,43 @@
   }
 }
 
+
 /* =========================================================
-   AI CODING IDE - PHASE 6 TERMINAL LAYOUT
+   AI CODING IDE
+   PROFESSIONAL DARK IDE LAYOUT
    ========================================================= */
 
-/* Main page */
+
+/* =========================================================
+   GLOBAL
+   ========================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+
+/* =========================================================
+   MAIN IDE PAGE
+   ========================================================= */
+
 .ide-page {
   width: 100%;
   height: 100vh;
+  min-width: 0;
   min-height: 0;
 
   display: flex;
@@ -203,6 +236,13 @@
 
   background: #1e1e1e;
   color: #d4d4d4;
+
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Arial,
+    sans-serif;
 }
 
 
@@ -224,13 +264,16 @@
 
   border-bottom: 1px solid #2d2d2d;
 
-  box-sizing: border-box;
+  color: #d4d4d4;
+
+  user-select: none;
 }
 
 
 .ide-header-left {
   display: flex;
   align-items: center;
+
   gap: 10px;
 
   font-size: 14px;
@@ -240,13 +283,21 @@
 }
 
 
+.ide-header-left svg {
+  flex-shrink: 0;
+}
+
+
 .ide-project-info {
   font-size: 12px;
+
   color: #858585;
 }
 
 
-/* Back button */
+/* =========================================================
+   BACK BUTTON
+   ========================================================= */
 
 .ide-back-button {
   width: 32px;
@@ -256,13 +307,20 @@
   align-items: center;
   justify-content: center;
 
+  padding: 0;
+
   border: none;
-  border-radius: 4px;
+  border-radius: 5px;
 
   background: transparent;
+
   color: #cccccc;
 
   cursor: pointer;
+
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 
@@ -272,37 +330,27 @@
 }
 
 
+.ide-back-button:active {
+  background: #333333;
+}
+
+
 /* =========================================================
-   MAIN IDE AREA
+   MAIN AREA
    ========================================================= */
-
-/*
-   IMPORTANT:
-
-   Column 1 = Explorer
-   Column 2 = Editor + Terminal
-
-   Row 1 = Editor
-   Row 2 = Terminal
-*/
 
 .ide-main-area {
   flex: 1;
 
-  min-height: 0;
   min-width: 0;
+  min-height: 0;
 
-  display: grid;
-
-  grid-template-columns: 225px minmax(0, 1fr);
-
-  grid-template-rows: minmax(0, 1fr) 240px;
-
-  grid-template-areas:
-    "explorer editor"
-    "explorer terminal";
+  display: flex;
+  flex-direction: column;
 
   overflow: hidden;
+
+  background: #111111;
 }
 
 
@@ -310,41 +358,61 @@
    WORKSPACE
    ========================================================= */
 
-/*
-   IDEPage currently has:
-
-   .ide-workspace
-       FileExplorer
-       .ide-editor
-
-   We allow those children to participate directly
-   in the .ide-main-area grid.
-*/
-
 .ide-workspace {
-  display: contents;
-}
-
-
-/* =========================================================
-   EXPLORER
-   ========================================================= */
-
-/*
-   FileExplorer is the first child of .ide-workspace.
-*/
-
-.ide-workspace>*:first-child {
-  grid-area: explorer;
+  flex: 1;
 
   min-width: 0;
   min-height: 0;
 
+  display: flex;
+  flex-direction: row;
+
   overflow: hidden;
 
-  border-right: 1px solid #2d2d2d;
+  background: #1e1e1e;
+  position: relative;
+}
+
+
+/* =========================================================
+   LEFT EXPLORER
+   ========================================================= */
+
+.ide-explorer {
+  flex-shrink: 0;
+
+  height: 100%;
+
+  min-width: 140px;
+  min-height: 0;
+
+  overflow: hidden;
 
   background: #181818;
+
+  border-right: none;
+}
+
+
+/* =========================================================
+   CENTER WORKSPACE
+   ========================================================= */
+
+.ide-center {
+  flex: 1;
+
+  width: 0;
+  height: 100%;
+
+  min-width: 200px;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  overflow: hidden;
+
+  background: #1e1e1e;
 }
 
 
@@ -353,7 +421,9 @@
    ========================================================= */
 
 .ide-editor {
-  grid-area: editor;
+  flex: 1;
+
+  width: 100%;
 
   min-width: 0;
   min-height: 0;
@@ -384,12 +454,16 @@
   background: #181818;
 
   border-bottom: 1px solid #2d2d2d;
+
+  scrollbar-width: thin;
 }
 
 
 .editor-tab {
   min-width: 120px;
   max-width: 220px;
+
+  height: 38px;
 
   display: flex;
   align-items: center;
@@ -400,22 +474,29 @@
   border-right: 1px solid #2d2d2d;
 
   background: #181818;
+
   color: #858585;
 
   cursor: pointer;
 
-  box-sizing: border-box;
+  user-select: none;
+
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 
 .editor-tab:hover {
   background: #202020;
+
   color: #cccccc;
 }
 
 
 .editor-tab.active {
   background: #1e1e1e;
+
   color: #ffffff;
 
   border-top: 1px solid #007acc;
@@ -427,24 +508,32 @@
 
   display: flex;
   align-items: center;
+
   gap: 5px;
 }
 
 
 .editor-tab-name>span:last-child {
   overflow: hidden;
+
   text-overflow: ellipsis;
+
   white-space: nowrap;
 }
 
 
 .editor-tab-dirty {
   color: #cccccc;
+
   font-size: 10px;
+
+  flex-shrink: 0;
 }
 
 
-/* Close button */
+/* =========================================================
+   TAB CLOSE BUTTON
+   ========================================================= */
 
 .editor-tab-close {
   width: 22px;
@@ -456,10 +545,13 @@
   align-items: center;
   justify-content: center;
 
+  padding: 0;
+
   border: none;
   border-radius: 3px;
 
   background: transparent;
+
   color: #858585;
 
   cursor: pointer;
@@ -468,6 +560,7 @@
 
 .editor-tab-close:hover {
   background: #333333;
+
   color: #ffffff;
 }
 
@@ -489,8 +582,6 @@
   background: #1e1e1e;
 
   border-bottom: 1px solid #2d2d2d;
-
-  box-sizing: border-box;
 }
 
 
@@ -499,27 +590,44 @@
 
   display: flex;
   align-items: center;
+
   gap: 10px;
 
   font-size: 12px;
+
   color: #cccccc;
+}
+
+
+.editor-toolbar-left>span:first-child {
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
 }
 
 
 .editor-modified {
   color: #dcdcaa;
+
+  font-size: 11px;
 }
 
 
 .editor-actions {
   display: flex;
   align-items: center;
+
   gap: 10px;
+
+  flex-shrink: 0;
 }
 
 
 .editor-save-status {
   font-size: 11px;
+
   color: #858585;
 }
 
@@ -528,10 +636,13 @@
   max-width: 300px;
 
   overflow: hidden;
+
   text-overflow: ellipsis;
+
   white-space: nowrap;
 
   font-size: 11px;
+
   color: #f48771;
 }
 
@@ -541,28 +652,40 @@
 
   display: flex;
   align-items: center;
+
   gap: 6px;
 
   padding: 0 10px;
 
   border: 1px solid #3a3a3a;
+
   border-radius: 4px;
 
   background: #252526;
+
   color: #cccccc;
 
   cursor: pointer;
+
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 
 .editor-save-button:hover:not(:disabled) {
   background: #333333;
+
+  border-color: #4a4a4a;
+
   color: #ffffff;
 }
 
 
 .editor-save-button:disabled {
   opacity: 0.45;
+
   cursor: not-allowed;
 }
 
@@ -577,17 +700,32 @@
   min-width: 0;
   min-height: 0;
 
+  width: 100%;
+  height: 100%;
+
   overflow: hidden;
+
+  background: #1e1e1e;
 }
 
+
+/* =========================================================
+   WELCOME SCREEN
+   ========================================================= */
 
 .editor-welcome {
   flex: 1;
 
+  min-width: 0;
+  min-height: 0;
+
   display: flex;
   flex-direction: column;
+
   align-items: center;
   justify-content: center;
+
+  padding: 30px;
 
   text-align: center;
 
@@ -599,6 +737,7 @@
   margin: 0 0 10px;
 
   font-size: 20px;
+
   font-weight: 500;
 
   color: #d4d4d4;
@@ -619,10 +758,14 @@
    ========================================================= */
 
 .ide-terminal {
-  grid-area: terminal;
+  flex: 0 0 240px;
+
+  width: 100%;
 
   min-width: 0;
-  min-height: 0;
+  min-height: 150px;
+
+  max-height: 60%;
 
   overflow: hidden;
 
@@ -645,6 +788,8 @@
 
   display: flex;
   flex-direction: column;
+
+  overflow: hidden;
 
   background: #0d0d0d;
 
@@ -683,11 +828,13 @@
 
 .terminal-header>span {
   font-size: 12px;
+
   font-weight: 600;
 
   color: #cccccc;
 
   text-transform: uppercase;
+
   letter-spacing: 0.4px;
 }
 
@@ -695,6 +842,7 @@
 .terminal-actions {
   display: flex;
   align-items: center;
+
   gap: 6px;
 }
 
@@ -705,12 +853,15 @@
   padding: 0 9px;
 
   border: 1px solid #3a3a3a;
+
   border-radius: 3px;
 
   background: #252526;
+
   color: #cccccc;
 
   font-family: inherit;
+
   font-size: 11px;
 
   cursor: pointer;
@@ -719,12 +870,14 @@
 
 .terminal-actions button:hover:not(:disabled) {
   background: #333333;
+
   color: #ffffff;
 }
 
 
 .terminal-actions button:disabled {
   opacity: 0.4;
+
   cursor: not-allowed;
 }
 
@@ -755,6 +908,7 @@
   min-height: 18px;
 
   white-space: pre-wrap;
+
   word-break: break-word;
 
   line-height: 18px;
@@ -791,6 +945,7 @@
   color: #4ec9b0;
 
   font-family: inherit;
+
   font-size: 13px;
 }
 
@@ -805,6 +960,7 @@
   padding: 0;
 
   border: none;
+
   outline: none;
 
   background: transparent;
@@ -812,6 +968,7 @@
   color: #f1f1f1;
 
   font-family: inherit;
+
   font-size: 13px;
 }
 
@@ -829,12 +986,49 @@
 
 
 /* =========================================================
+   RIGHT AI PANEL
+   ========================================================= */
+
+.ide-ai-panel {
+  width: 100%;
+  height: 100%;
+
+  min-width: 0;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  overflow: hidden;
+
+  background: #151515;
+
+  border-left: 1px solid #2d2d2d;
+
+  box-sizing: border-box;
+}
+
+
+/* =========================================================
+   AI CHAT - SAFETY / SIZING
+   ========================================================= */
+
+.ide-ai-panel>* {
+  min-width: 0;
+  min-height: 0;
+
+  width: 100%;
+}
+
+
+/* =========================================================
    SCROLLBARS
    ========================================================= */
 
 .editor-tabs::-webkit-scrollbar,
 .terminal-output::-webkit-scrollbar {
   width: 8px;
+
   height: 8px;
 }
 
@@ -848,6 +1042,8 @@
 .editor-tabs::-webkit-scrollbar-thumb,
 .terminal-output::-webkit-scrollbar-thumb {
   background: #424242;
+
+  border-radius: 4px;
 }
 
 
@@ -858,20 +1054,75 @@
 
 
 /* =========================================================
+   SELECTION
+   ========================================================= */
+
+.ide-page ::selection {
+  background: #264f78;
+
+  color: #ffffff;
+}
+
+
+/* =========================================================
    RESPONSIVE
    ========================================================= */
 
+@media (max-width: 1100px) {
+
+  .ide-workspace {
+    grid-template-columns:
+      200px minmax(0, 1fr) 320px;
+  }
+
+}
+
+
+@media (max-width: 900px) {
+
+  .ide-workspace {
+    grid-template-columns:
+      190px minmax(0, 1fr) 300px;
+  }
+
+  .editor-save-status {
+    display: none;
+  }
+
+}
+
+
 @media (max-width: 700px) {
 
-  .ide-main-area {
-    grid-template-columns: 180px minmax(0, 1fr);
+  .ide-workspace {
+    grid-template-columns:
+      180px minmax(0, 1fr);
+  }
 
-    grid-template-rows:
-      minmax(0, 1fr) 220px;
+  .ide-ai-panel {
+    display: none;
+  }
+
+}
+
+
+@media (max-width: 550px) {
+
+  .ide-workspace {
+    grid-template-columns:
+      minmax(0, 1fr);
+  }
+
+  .ide-explorer {
+    display: none;
   }
 
   .ide-header {
     padding: 0 10px;
+  }
+
+  .ide-project-info {
+    display: none;
   }
 
   .editor-toolbar-left {
@@ -881,4 +1132,37 @@
   .editor-save-status {
     display: none;
   }
+
+  .ide-terminal {
+    flex-basis: 200px;
+  }
+
+}
+
+
+/* =========================================================
+   FOCUS STATES
+   ========================================================= */
+
+.ide-page button:focus-visible,
+.ide-page input:focus-visible {
+  outline: 1px solid #007acc;
+
+  outline-offset: 1px;
+}
+
+
+/* =========================================================
+   PREVENT ACCIDENTAL HORIZONTAL OVERFLOW
+   ========================================================= */
+
+.ide-page,
+.ide-main-area,
+.ide-workspace,
+.ide-center,
+.ide-editor,
+.ide-explorer,
+.ide-ai-panel,
+.ide-terminal {
+  max-width: 100%;
 }

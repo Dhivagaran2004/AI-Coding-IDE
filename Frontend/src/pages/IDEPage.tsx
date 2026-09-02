@@ -1,6 +1,7 @@
 import {
     useEffect,
     useState,
+    useRef,
 } from "react";
 
 import CodeEditor
@@ -40,6 +41,7 @@ import type {
     ProjectFileCreate,
 } from "../types/file";
 
+import AIChat from "../components/ai/AIChat";
 
 // =========================================
 // Editor Tab Type
@@ -116,21 +118,108 @@ export default function IDEPage() {
 
 
     // =========================================
-    // Validate Project ID
+    // Resizable Panels State
     // =========================================
 
-    if (!projectId) {
+    const [
+        explorerWidth,
+        setExplorerWidth,
+    ] = useState<number>(() => {
+        const saved = localStorage.getItem("ide_explorer_width");
+        return saved ? Math.max(160, Math.min(600, parseInt(saved, 10))) : 240;
+    });
 
-        return (
-            <div>
-                Invalid project.
-            </div>
-        );
-    }
+    const [
+        aiPanelWidth,
+        setAiPanelWidth,
+    ] = useState<number>(() => {
+        const saved = localStorage.getItem("ide_ai_panel_width");
+        return saved ? Math.max(260, Math.min(800, parseInt(saved, 10))) : 360;
+    });
 
+    const [
+        terminalHeight,
+        setTerminalHeight,
+    ] = useState<number>(() => {
+        const saved = localStorage.getItem("ide_terminal_height");
+        return saved ? Math.max(80, Math.min(600, parseInt(saved, 10))) : 240;
+    });
+
+    const [
+        activeResizer,
+        setActiveResizer,
+    ] = useState<"explorer" | "terminal" | "ai" | null>(null);
+
+    const workspaceRef = useRef<HTMLDivElement | null>(null);
+    const centerRef = useRef<HTMLDivElement | null>(null);
+
+    // Synchronize to localStorage
+    useEffect(() => {
+        localStorage.setItem("ide_explorer_width", String(explorerWidth));
+    }, [explorerWidth]);
+
+    useEffect(() => {
+        localStorage.setItem("ide_ai_panel_width", String(aiPanelWidth));
+    }, [aiPanelWidth]);
+
+    useEffect(() => {
+        localStorage.setItem("ide_terminal_height", String(terminalHeight));
+    }, [terminalHeight]);
+
+    // Resizing mousemove & mouseup listeners
+    useEffect(() => {
+        if (!activeResizer) return;
+
+        function handleMouseMove(event: MouseEvent) {
+            if (!activeResizer) return;
+
+            if (activeResizer === "explorer") {
+                if (!workspaceRef.current) return;
+                const rect = workspaceRef.current.getBoundingClientRect();
+                const newWidth = event.clientX - rect.left;
+                const minWidth = 160;
+                const maxWidth = Math.max(minWidth, Math.min(600, rect.width - 450));
+                const clamped = Math.max(minWidth, Math.min(maxWidth, newWidth));
+                setExplorerWidth(clamped);
+            } else if (activeResizer === "ai") {
+                if (!workspaceRef.current) return;
+                const rect = workspaceRef.current.getBoundingClientRect();
+                const newWidth = rect.right - event.clientX;
+                const minWidth = 260;
+                const maxWidth = Math.max(minWidth, Math.min(800, rect.width - 400));
+                const clamped = Math.max(minWidth, Math.min(maxWidth, newWidth));
+                setAiPanelWidth(clamped);
+            } else if (activeResizer === "terminal") {
+                if (!centerRef.current) return;
+                const rect = centerRef.current.getBoundingClientRect();
+                const newHeight = rect.bottom - event.clientY;
+                const minHeight = 80;
+                const maxHeight = Math.max(minHeight, Math.min(650, rect.height - 100));
+                const clamped = Math.max(minHeight, Math.min(maxHeight, newHeight));
+                setTerminalHeight(clamped);
+            }
+        }
+
+        function handleMouseUp() {
+            setActiveResizer(null);
+        }
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, [activeResizer]);
+
+
+    // =========================================
+    // Numeric Project ID
+    // =========================================
 
     const numericProjectId =
-        Number(projectId);
+        projectId ? Number(projectId) : 0;
 
 
     // =========================================
@@ -1092,6 +1181,14 @@ export default function IDEPage() {
     // UI
     // =========================================
 
+    if (!projectId) {
+        return (
+            <div className="ide-page" style={{ padding: 20, color: "#fff" }}>
+                Invalid project.
+            </div>
+        );
+    }
+
     return (
 
         <div className="ide-page">
@@ -1146,326 +1243,461 @@ export default function IDEPage() {
             <div className="ide-main-area">
 
                 {/* ================================= */}
-                {/* Explorer + Editor */}
+                {/* Main Workspace */}
                 {/* ================================= */}
 
-                <div className="ide-workspace">
+                <div
+                    className="ide-workspace"
+                    ref={workspaceRef}
+                >
 
                     {/* ================================= */}
-                    {/* File Explorer */}
+                    {/* LEFT: FILE EXPLORER */}
                     {/* ================================= */}
 
-                    <FileExplorer
+                    <aside
+                        className="ide-explorer"
+                        style={{
+                            width: `${explorerWidth}px`,
+                            flexBasis: `${explorerWidth}px`,
+                        }}
+                    >
 
-                        key={refreshKey}
+                        <FileExplorer
+                            key={refreshKey}
+                            projectId={
+                                numericProjectId
+                            }
+                            onFileSelect={
+                                openFile
+                            }
+                            onCreateFile={
+                                handleCreateFile
+                            }
+                            onCreateFolder={
+                                handleCreateFolder
+                            }
+                            onRename={
+                                handleRename
+                            }
+                            onDelete={
+                                handleDelete
+                            }
+                        />
 
-                        projectId={
-                            numericProjectId
-                        }
-
-                        onFileSelect={
-                            openFile
-                        }
-
-                        onCreateFile={
-                            handleCreateFile
-                        }
-
-                        onCreateFolder={
-                            handleCreateFolder
-                        }
-
-                        onRename={
-                            handleRename
-                        }
-
-                        onDelete={
-                            handleDelete
-                        }
-
-                    />
+                    </aside>
 
 
                     {/* ================================= */}
-                    {/* Editor */}
+                    {/* RESIZER: EXPLORER / CENTER */}
                     {/* ================================= */}
 
-                    <main className="ide-editor">
+                    <div
+                        className={`ide-resizer ide-resizer-col ${
+                            activeResizer === "explorer"
+                                ? "is-active"
+                                : ""
+                        }`}
+                        onMouseDown={event => {
+                            event.preventDefault();
+                            setActiveResizer(
+                                "explorer"
+                            );
+                        }}
+                        onDoubleClick={() =>
+                            setExplorerWidth(240)
+                        }
+                        title="Drag to resize explorer (Double-click to reset)"
+                    >
 
-                        {tabs.length > 0 ? (
+                        <div className="ide-resizer-handle" />
 
-                            <>
+                    </div>
 
-                                {/* ========================= */}
-                                {/* Editor Tabs */}
-                                {/* ========================= */}
 
-                                <div className="editor-tabs">
+                    {/* ================================= */}
+                    {/* CENTER: EDITOR + TERMINAL */}
+                    {/* ================================= */}
 
-                                    {tabs.map(
-                                        tab => (
+                    <div
+                        className="ide-center"
+                        ref={centerRef}
+                    >
 
-                                            <div
-                                                key={
-                                                    tab.file.id
-                                                }
-                                                className={
-                                                    tab.file.id ===
-                                                        activeTabId
-                                                        ? "editor-tab active"
-                                                        : "editor-tab"
-                                                }
-                                                onClick={() =>
-                                                    handleTabClick(
-                                                        tab.file.id
-                                                    )
-                                                }
-                                            >
+                        {/* ================================= */}
+                        {/* EDITOR */}
+                        {/* ================================= */}
+
+                        <main className="ide-editor">
+
+                            {tabs.length > 0 ? (
+
+                                <>
+
+                                    {/* ========================= */}
+                                    {/* Editor Tabs */}
+                                    {/* ========================= */}
+
+                                    <div className="editor-tabs">
+
+                                        {tabs.map(
+                                            tab => (
 
                                                 <div
-                                                    className="editor-tab-name"
+                                                    key={
+                                                        tab.file.id
+                                                    }
+                                                    className={
+                                                        tab.file.id ===
+                                                            activeTabId
+                                                            ? "editor-tab active"
+                                                            : "editor-tab"
+                                                    }
+                                                    onClick={() =>
+                                                        handleTabClick(
+                                                            tab.file.id
+                                                        )
+                                                    }
                                                 >
 
-                                                    {tab.isDirty && (
+                                                    <div
+                                                        className="editor-tab-name"
+                                                    >
 
-                                                        <span
-                                                            className="editor-tab-dirty"
-                                                        >
-                                                            ●
+                                                        {tab.isDirty && (
+
+                                                            <span
+                                                                className="editor-tab-dirty"
+                                                            >
+                                                                ●
+                                                            </span>
+
+                                                        )}
+
+
+                                                        <span>
+                                                            {
+                                                                tab.file.name
+                                                            }
                                                         </span>
 
-                                                    )}
+                                                    </div>
 
 
-                                                    <span>
-                                                        {
-                                                            tab.file.name
+                                                    <button
+                                                        type="button"
+                                                        className="editor-tab-close"
+                                                        onClick={(
+                                                            event
+                                                        ) => {
+
+                                                            event.stopPropagation();
+
+                                                            handleCloseTab(
+                                                                tab.file.id
+                                                            );
+
+                                                        }}
+                                                        title={
+                                                            `Close ${tab.file.name}`
                                                         }
-                                                    </span>
+                                                    >
+
+                                                        <X
+                                                            size={14}
+                                                        />
+
+                                                    </button>
 
                                                 </div>
+
+                                            )
+                                        )}
+
+                                    </div>
+
+
+                                    {/* ========================= */}
+                                    {/* Editor Toolbar */}
+                                    {/* ========================= */}
+
+                                    {activeTab && (
+
+                                        <div
+                                            className="editor-toolbar"
+                                        >
+
+                                            <div className="editor-toolbar-left">
+
+                                                <span>
+                                                    {
+                                                        activeTab.file.name
+                                                    }
+                                                </span>
+
+
+                                                {activeTab.isDirty && (
+
+                                                    <span
+                                                        className="editor-modified"
+                                                    >
+                                                        Modified
+                                                    </span>
+
+                                                )}
+
+                                            </div>
+
+
+                                            <div className="editor-actions">
+
+                                                {saveError && (
+
+                                                    <span
+                                                        className="editor-save-error"
+                                                        title={saveError}
+                                                    >
+                                                        {saveError}
+                                                    </span>
+
+                                                )}
+
+
+                                                {isSaving ? (
+
+                                                    <span
+                                                        className="editor-save-status"
+                                                    >
+                                                        Saving...
+                                                    </span>
+
+                                                ) : activeTab.isDirty ? (
+
+                                                    <span
+                                                        className="editor-save-status"
+                                                    >
+                                                        Unsaved
+                                                    </span>
+
+                                                ) : (
+
+                                                    <span
+                                                        className="editor-save-status"
+                                                    >
+                                                        Saved
+                                                    </span>
+
+                                                )}
 
 
                                                 <button
                                                     type="button"
-                                                    className="editor-tab-close"
-                                                    onClick={(
-                                                        event
-                                                    ) => {
-
-                                                        event.stopPropagation();
-
-
-                                                        handleCloseTab(
-                                                            tab.file.id
-                                                        );
-
-                                                    }}
-                                                    title={`Close ${tab.file.name}`}
+                                                    className="editor-save-button"
+                                                    onClick={
+                                                        saveFile
+                                                    }
+                                                    disabled={
+                                                        isSaving ||
+                                                        !activeTab.isDirty
+                                                    }
+                                                    title="Save file (Ctrl+S)"
                                                 >
 
-                                                    <X
-                                                        size={14}
+                                                    <Save
+                                                        size={15}
                                                     />
+
+                                                    <span>
+                                                        Save
+                                                    </span>
 
                                                 </button>
 
                                             </div>
 
-                                        )
+                                        </div>
+
                                     )}
+
+
+                                    {/* ========================= */}
+                                    {/* Monaco Editor */}
+                                    {/* ========================= */}
+
+                                    {activeTab && (
+
+                                        <div
+                                            className="editor-area"
+                                        >
+
+                                            <CodeEditor
+                                                key={
+                                                    activeTab.file.id
+                                                }
+                                                value={
+                                                    activeTab.content
+                                                }
+                                                language={
+                                                    activeTab.language
+                                                }
+                                                onChange={(
+                                                    value
+                                                ) => {
+
+                                                    handleEditorChange(
+                                                        value ?? ""
+                                                    );
+
+                                                }}
+                                            />
+
+                                        </div>
+
+                                    )}
+
+                                </>
+
+                            ) : (
+
+                                /* ================================= */
+                                /* Welcome Screen */
+                                /* ================================= */
+
+                                <div className="editor-welcome">
+
+                                    <h2>
+                                        Welcome to your AI Coding IDE
+                                    </h2>
+
+
+                                    <p>
+                                        Select a file from the
+                                        Explorer to start coding.
+                                    </p>
 
                                 </div>
 
+                            )}
 
-                                {/* ========================= */}
-                                {/* Editor Toolbar */}
-                                {/* ========================= */}
-
-                                {activeTab && (
-
-                                    <div
-                                        className="editor-toolbar"
-                                    >
-
-                                        <div className="editor-toolbar-left">
-
-                                            <span>
-                                                {
-                                                    activeTab.file.name
-                                                }
-                                            </span>
+                        </main>
 
 
-                                            {activeTab.isDirty && (
+                        {/* ================================= */}
+                        {/* RESIZER: EDITOR / TERMINAL */}
+                        {/* ================================= */}
 
-                                                <span
-                                                    className="editor-modified"
-                                                >
-                                                    Modified
-                                                </span>
+                        <div
+                            className={`ide-resizer ide-resizer-row ${
+                                activeResizer === "terminal"
+                                    ? "is-active"
+                                    : ""
+                            }`}
+                            onMouseDown={event => {
+                                event.preventDefault();
+                                setActiveResizer(
+                                    "terminal"
+                                );
+                            }}
+                            onDoubleClick={() =>
+                                setTerminalHeight(240)
+                            }
+                            title="Drag to resize terminal (Double-click to reset)"
+                        >
 
-                                            )}
+                            <div className="ide-resizer-handle" />
 
-                                        </div>
-
-
-                                        <div className="editor-actions">
-
-                                            {saveError && (
-
-                                                <span
-                                                    className="editor-save-error"
-                                                    title={saveError}
-                                                >
-                                                    {saveError}
-                                                </span>
-
-                                            )}
-
-
-                                            {isSaving ? (
-
-                                                <span
-                                                    className="editor-save-status"
-                                                >
-                                                    Saving...
-                                                </span>
-
-                                            ) : activeTab.isDirty ? (
-
-                                                <span
-                                                    className="editor-save-status"
-                                                >
-                                                    Unsaved
-                                                </span>
-
-                                            ) : (
-
-                                                <span
-                                                    className="editor-save-status"
-                                                >
-                                                    Saved
-                                                </span>
-
-                                            )}
+                        </div>
 
 
-                                            <button
-                                                type="button"
-                                                className="editor-save-button"
-                                                onClick={
-                                                    saveFile
-                                                }
-                                                disabled={
-                                                    isSaving ||
-                                                    !activeTab.isDirty
-                                                }
-                                                title="Save file (Ctrl+S)"
-                                            >
+                        {/* ================================= */}
+                        {/* TERMINAL */}
+                        {/* ================================= */}
 
-                                                <Save
-                                                    size={15}
-                                                />
+                        <section
+                            className="ide-terminal"
+                            style={{
+                                height: `${terminalHeight}px`,
+                                flexBasis: `${terminalHeight}px`,
+                            }}
+                        >
 
-                                                <span>
-                                                    Save
-                                                </span>
+                            <Terminal
+                                projectId={
+                                    numericProjectId
+                                }
+                            />
 
-                                            </button>
+                        </section>
 
-                                        </div>
-
-                                    </div>
-
-                                )}
+                    </div>
 
 
-                                {/* ========================= */}
-                                {/* Monaco Editor */}
-                                {/* ========================= */}
+                    {/* ================================= */}
+                    {/* RESIZER: CENTER / AI PANEL */}
+                    {/* ================================= */}
 
-                                {activeTab && (
-
-                                    <div
-                                        className="editor-area"
-                                    >
-
-                                        <CodeEditor
-
-                                            key={
-                                                activeTab.file.id
-                                            }
-
-                                            value={
-                                                activeTab.content
-                                            }
-
-                                            language={
-                                                activeTab.language
-                                            }
-
-                                            onChange={(
-                                                value
-                                            ) => {
-
-                                                handleEditorChange(
-                                                    value ?? ""
-                                                );
-
-                                            }}
-
-                                        />
-
-                                    </div>
-
-                                )}
-
-                            </>
-
-                        ) : (
-
-                            /* ================================= */
-                            /* Welcome Screen */
-                            /* ================================= */
-
-                            <div className="editor-welcome">
-
-                                <h2>
-                                    Welcome to your AI Coding IDE
-                                </h2>
-
-
-                                <p>
-                                    Select a file from the
-                                    Explorer to start coding.
-                                </p>
-
-                            </div>
-
-                        )}
-
-                    </main>
-
-                </div>
-
-
-                {/* ================================= */}
-                {/* Terminal */}
-                {/* ================================= */}
-
-                <div className="ide-terminal">
-
-                    <Terminal
-                        projectId={
-                            numericProjectId
+                    <div
+                        className={`ide-resizer ide-resizer-col ${
+                            activeResizer === "ai"
+                                ? "is-active"
+                                : ""
+                        }`}
+                        onMouseDown={event => {
+                            event.preventDefault();
+                            setActiveResizer(
+                                "ai"
+                            );
+                        }}
+                        onDoubleClick={() =>
+                            setAiPanelWidth(360)
                         }
-                    />
+                        title="Drag to resize AI panel (Double-click to reset)"
+                    >
+
+                        <div className="ide-resizer-handle" />
+
+                    </div>
+
+
+                    {/* ================================= */}
+                    {/* RIGHT: AI ASSISTANT */}
+                    {/* ================================= */}
+
+                    <aside
+                        className="ide-ai-panel"
+                        style={{
+                            width: `${aiPanelWidth}px`,
+                            flexBasis: `${aiPanelWidth}px`,
+                        }}
+                    >
+
+                        <AIChat />
+
+                    </aside>
+
+
+                    {/* ================================= */}
+                    {/* Dragging Overlay */}
+                    {/* ================================= */}
+
+                    {activeResizer && (
+
+                        <div
+                            className={`ide-resize-overlay ${
+                                activeResizer ===
+                                "terminal"
+                                    ? "row-resizing"
+                                    : "col-resizing"
+                            }`}
+                        />
+
+                    )}
 
                 </div>
 
             </div>
 
         </div>
+
     );
 }
