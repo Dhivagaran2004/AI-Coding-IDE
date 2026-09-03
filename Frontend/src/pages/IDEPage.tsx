@@ -445,7 +445,39 @@ export default function IDEPage() {
 
         setSaveError("");
     }
+    // =========================================
+    // Apply AI Generated Code
+    // =========================================
 
+    function handleApplyCode(
+        code: string
+    ) {
+        if (activeTabId === null) {
+            return;
+        }
+
+        setTabs(
+            currentTabs =>
+                currentTabs.map(
+                    tab => {
+
+                        if (
+                            tab.file.id !== activeTabId
+                        ) {
+                            return tab;
+                        }
+
+                        return {
+                            ...tab,
+                            content: code,
+                            isDirty: true,
+                        };
+                    }
+                )
+        );
+
+        setSaveError("");
+    }
 
     // =========================================
     // Switch Tab
@@ -1293,11 +1325,10 @@ export default function IDEPage() {
                     {/* ================================= */}
 
                     <div
-                        className={`ide-resizer ide-resizer-col ${
-                            activeResizer === "explorer"
-                                ? "is-active"
-                                : ""
-                        }`}
+                        className={`ide-resizer ide-resizer-col ${activeResizer === "explorer"
+                            ? "is-active"
+                            : ""
+                            }`}
                         onMouseDown={event => {
                             event.preventDefault();
                             setActiveResizer(
@@ -1587,11 +1618,10 @@ export default function IDEPage() {
                         {/* ================================= */}
 
                         <div
-                            className={`ide-resizer ide-resizer-row ${
-                                activeResizer === "terminal"
-                                    ? "is-active"
-                                    : ""
-                            }`}
+                            className={`ide-resizer ide-resizer-row ${activeResizer === "terminal"
+                                ? "is-active"
+                                : ""
+                                }`}
                             onMouseDown={event => {
                                 event.preventDefault();
                                 setActiveResizer(
@@ -1637,11 +1667,10 @@ export default function IDEPage() {
                     {/* ================================= */}
 
                     <div
-                        className={`ide-resizer ide-resizer-col ${
-                            activeResizer === "ai"
-                                ? "is-active"
-                                : ""
-                        }`}
+                        className={`ide-resizer ide-resizer-col ${activeResizer === "ai"
+                            ? "is-active"
+                            : ""
+                            }`}
                         onMouseDown={event => {
                             event.preventDefault();
                             setActiveResizer(
@@ -1670,8 +1699,11 @@ export default function IDEPage() {
                             flexBasis: `${aiPanelWidth}px`,
                         }}
                     >
-
-                        <AIChat />
+                        <AIChat
+                            context={activeTab?.content ?? null}
+                            fileName={activeTab?.file.name ?? null}
+                            onApplyCode={handleApplyCode}
+                        />
 
                     </aside>
 
@@ -1683,12 +1715,11 @@ export default function IDEPage() {
                     {activeResizer && (
 
                         <div
-                            className={`ide-resize-overlay ${
-                                activeResizer ===
+                            className={`ide-resize-overlay ${activeResizer ===
                                 "terminal"
-                                    ? "row-resizing"
-                                    : "col-resizing"
-                            }`}
+                                ? "row-resizing"
+                                : "col-resizing"
+                                }`}
                         />
 
                     )}
