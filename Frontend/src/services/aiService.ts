@@ -24,7 +24,7 @@ export async function sendAIChat(
         const response = await api.post<AIChatResponse>(
             "/ai/chat",
             request,
-            { timeout: 30000 }
+            { timeout: 120000 }
         );
         return response.data;
     } catch (error: any) {

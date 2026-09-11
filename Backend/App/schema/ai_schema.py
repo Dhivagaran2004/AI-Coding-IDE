@@ -42,6 +42,14 @@ class AIChatRequest(BaseModel):
         description="Previous messages in the conversation.",
     )
 
+    project_id: int | None = Field(
+    default=None,
+    description=(
+        "Optional project ID used to search "
+        "repository context."
+    ),
+)
+
 
 class AIChatResponse(BaseModel):
     """
@@ -51,3 +59,4 @@ class AIChatResponse(BaseModel):
     message: str
     provider: str
     model: str
+

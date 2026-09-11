@@ -1,5 +1,5 @@
 /* ================================================
-   AI Chat Panel — VS Dark theme (matches Monaco)
+   AI Chat Panel — VS Code Dark Theme
    ================================================ */
 
 .ai-chat {
@@ -21,17 +21,34 @@
 .ai-chat__header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 6px;
     min-height: 58px;
     padding: 10px 14px;
     border-bottom: 1px solid #2d2d2d;
     background: #252526;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.ai-chat__header::-webkit-scrollbar {
+    height: 4px;
+}
+
+.ai-chat__header::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.ai-chat__header::-webkit-scrollbar-thumb {
+    background: #3a3a3a;
+    border-radius: 2px;
 }
 
 .ai-chat__title-section {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: max-content;
+    margin-right: auto;
 }
 
 .ai-chat__icon {
@@ -40,6 +57,7 @@
     justify-content: center;
     width: 34px;
     height: 34px;
+    flex-shrink: 0;
     border-radius: 6px;
     background: #007acc;
     color: #ffffff;
@@ -68,9 +86,20 @@
 .ai-chat__status-dot {
     width: 6px;
     height: 6px;
+    flex-shrink: 0;
     border-radius: 50%;
     background: #4ec9b0;
-    /* VS Code terminal green */
+}
+
+.ai-chat__context {
+    display: block;
+    max-width: 180px;
+    margin-top: 3px;
+    overflow: hidden;
+    color: #858585;
+    font-size: 11px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 .ai-chat__menu-button {
@@ -79,18 +108,56 @@
     justify-content: center;
     width: 30px;
     height: 30px;
+    flex-shrink: 0;
     border: none;
     border-radius: 4px;
     background: transparent;
     color: #858585;
     font-size: 18px;
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
 }
 
 .ai-chat__menu-button:hover {
     background: #333333;
     color: #cccccc;
+}
+
+/* ================================
+   Action Buttons
+================================ */
+
+.ai-chat__action-button {
+    flex-shrink: 0;
+    padding: 5px 9px;
+    border: 1px solid #3f3f46;
+    border-radius: 5px;
+    background: #252526;
+    color: #cccccc;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__action-button:hover:not(:disabled) {
+    background: #2d2d30;
+    border-color: #666666;
+    color: #ffffff;
+}
+
+.ai-chat__action-button:active:not(:disabled) {
+    background: #333336;
+}
+
+.ai-chat__action-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 /* ================================
@@ -150,8 +217,8 @@
 }
 
 .ai-chat__avatar--assistant {
-    background: #252526;
     border: 1px solid #3a3a3a;
+    background: #252526;
     color: #858585;
 }
 
@@ -167,25 +234,232 @@
     border-radius: 6px;
     font-size: 13px;
     line-height: 1.55;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 
 .ai-chat__bubble--assistant {
-    background: #252526;
     border: 1px solid #333333;
-    color: #cccccc;
     border-top-left-radius: 2px;
+    background: #252526;
+    color: #cccccc;
 }
 
 .ai-chat__bubble--user {
+    border-top-right-radius: 2px;
     background: #007acc;
     color: #ffffff;
-    border-top-right-radius: 2px;
+}
+
+.ai-chat__message-content {
+    white-space: pre-wrap;
 }
 
 /* ================================
-   Typing indicator
+   Code Preview Trigger
+================================ */
+
+.ai-chat__code-actions {
+    display: flex;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.ai-chat__preview-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 6px 11px;
+    border: 1px solid #3f3f46;
+    border-radius: 5px;
+    background: #2d2d30;
+    color: #cccccc;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__preview-button:hover {
+    border-color: #007acc;
+    background: #333333;
+    color: #ffffff;
+}
+
+.ai-chat__preview-button:active {
+    background: #3a3a3a;
+}
+
+/* ================================
+   AI Proposed Code Preview
+================================ */
+
+.ai-chat__preview {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    max-height: 45%;
+    min-height: 180px;
+    border-top: 1px solid #3a3a3a;
+    background: #181818;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.ai-chat__preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    min-height: 48px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #2d2d2d;
+    background: #252526;
+}
+
+.ai-chat__preview-title {
+    display: block;
+    color: #cccccc;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ai-chat__preview-subtitle {
+    display: block;
+    margin-top: 2px;
+    color: #858585;
+    font-size: 10px;
+}
+
+.ai-chat__preview-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #858585;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__preview-close:hover {
+    background: #333333;
+    color: #ffffff;
+}
+
+.ai-chat__preview-code {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    background: #181818;
+    color: #d4d4d4;
+    font-family:
+        "Cascadia Code",
+        "Fira Code",
+        Consolas,
+        "Courier New",
+        monospace;
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre;
+    tab-size: 4;
+}
+
+.ai-chat__preview-code::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.ai-chat__preview-code::-webkit-scrollbar-track {
+    background: #181818;
+}
+
+.ai-chat__preview-code::-webkit-scrollbar-thumb {
+    border-radius: 4px;
+    background: #3a3a3a;
+}
+
+.ai-chat__preview-code::-webkit-scrollbar-thumb:hover {
+    background: #4a4a4a;
+}
+
+.ai-chat__preview-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 9px 12px;
+    border-top: 1px solid #2d2d2d;
+    background: #252526;
+}
+
+.ai-chat__reject-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 6px 13px;
+    border: 1px solid #3f3f46;
+    border-radius: 5px;
+    background: transparent;
+    color: #cccccc;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__reject-button:hover {
+    border-color: #666666;
+    background: #333333;
+    color: #ffffff;
+}
+
+.ai-chat__apply-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 6px 13px;
+    border: 1px solid #007acc;
+    border-radius: 5px;
+    background: #007acc;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease;
+}
+
+.ai-chat__apply-button:hover {
+    border-color: #1685c9;
+    background: #1685c9;
+}
+
+.ai-chat__apply-button:active {
+    border-color: #005fa3;
+    background: #005fa3;
+}
+
+/* ================================
+   Typing Indicator
 ================================ */
 
 .ai-chat__typing {
@@ -227,7 +501,7 @@
 }
 
 /* ================================
-   Input area
+   Input Area
 ================================ */
 
 .ai-chat__input-area {
@@ -284,9 +558,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
     width: 30px;
     height: 30px;
+    flex-shrink: 0;
     border: none;
     border-radius: 4px;
     background: #007acc;
@@ -323,59 +597,1098 @@
     color: #858585;
 }
 
-.ai-chat__context {
-    display: block;
-    margin-top: 3px;
-    font-size: 11px;
-    color: #858585;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+/* ================================
+   Responsive
+================================ */
+
+@media (max-width: 700px) {
+
+    .ai-chat__header {
+        padding: 8px 10px;
+    }
+
+    .ai-chat__title-section {
+        gap: 7px;
+    }
+
+    .ai-chat__action-button {
+        padding: 5px 7px;
+        font-size: 10px;
+    }
+
+    .ai-chat__messages {
+        padding: 12px 10px;
+    }
+
+    .ai-chat__bubble {
+        max-width: 88%;
+    }
+
+    .ai-chat__preview {
+        max-height: 50%;
+    }
 }
 
-.ai-chat__apply-button {
-    display: inline-flex;
+/* =========================================================
+   AI-2C — PROFESSIONAL CODE DIFF VIEWER
+   ========================================================= */
+
+/* =========================================================
+   DIFF PREVIEW CONTAINER
+   ========================================================= */
+
+.ai-chat__preview {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+
+    width: 100%;
+    max-height: 46%;
+
+    min-height: 220px;
+
+    background: #111214;
+
+    border-top: 1px solid #2a2d32;
+    border-bottom: 1px solid #2a2d32;
+
+    overflow: hidden;
+}
+
+/* =========================================================
+   PREVIEW HEADER
+   ========================================================= */
+
+.ai-chat__preview-header {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    min-height: 54px;
+
+    padding: 10px 14px;
+
+    background: #17191d;
+
+    border-bottom: 1px solid #292c31;
+}
+
+.ai-chat__preview-header>div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    min-width: 0;
+}
+
+.ai-chat__preview-title {
+    display: block;
+
+    color: #e8eaed;
+
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+.ai-chat__preview-subtitle {
+    display: block;
+
+    color: #858b94;
+
+    font-size: 11px;
+    line-height: 15px;
+}
+
+/* =========================================================
+   CLOSE BUTTON
+   ========================================================= */
+
+.ai-chat__preview-close {
+    display: flex;
     align-items: center;
     justify-content: center;
-    margin-top: 12px;
-    padding: 7px 12px;
-    border: 1px solid #3f3f46;
-    border-radius: 6px;
-    background: #252526;
-    color: #cccccc;
+
+    width: 28px;
+    height: 28px;
+
+    padding: 0;
+
+    border: 0;
+    border-radius: 5px;
+
+    background: transparent;
+
+    color: #858b94;
+
+    font-size: 18px;
+    line-height: 1;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__preview-close:hover {
+    background: #282b30;
+    color: #ffffff;
+}
+
+/* =========================================================
+   DIFF SUMMARY
+   ========================================================= */
+
+.ai-chat__diff-summary {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+
+    gap: 14px;
+
+    min-height: 34px;
+
+    padding: 0 14px;
+
+    background: #14161a;
+
+    border-bottom: 1px solid #25282d;
+
+    font-size: 11px;
+}
+
+.ai-chat__diff-summary-item {
+    color: #858b94;
+}
+
+.ai-chat__diff-summary-item--added {
+    color: #6ee7a0;
+}
+
+.ai-chat__diff-summary-item--removed {
+    color: #ff8585;
+}
+
+/* =========================================================
+   DIFF SCROLL AREA
+   ========================================================= */
+
+.ai-chat__diff {
+    flex: 1;
+
+    min-height: 0;
+
+    overflow: auto;
+
+    background: #101113;
+
+    font-family:
+        "Cascadia Code",
+        "Consolas",
+        "SFMono-Regular",
+        monospace;
+
+    font-size: 12px;
+
+    line-height: 20px;
+}
+
+/* =========================================================
+   DIFF SCROLLBAR
+   ========================================================= */
+
+.ai-chat__diff::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.ai-chat__diff::-webkit-scrollbar-track {
+    background: #111214;
+}
+
+.ai-chat__diff::-webkit-scrollbar-thumb {
+    background: #34383f;
+
+    border-radius: 5px;
+
+    border: 2px solid #111214;
+}
+
+.ai-chat__diff::-webkit-scrollbar-thumb:hover {
+    background: #454a53;
+}
+
+/* =========================================================
+   DIFF LINE
+   ========================================================= */
+
+.ai-chat__diff-line {
+    display: grid;
+
+    grid-template-columns:
+        48px 48px 24px minmax(max-content, 1fr);
+
+    min-width: max-content;
+
+    min-height: 20px;
+
+    padding: 0;
+}
+
+/* =========================================================
+   LINE NUMBERS
+   ========================================================= */
+
+.ai-chat__diff-old-number,
+.ai-chat__diff-new-number {
+    display: block;
+
+    padding: 0 8px;
+
+    text-align: right;
+
+    user-select: none;
+
+    color: #555b64;
+
+    background: #15171b;
+
+    border-right: 1px solid #24272c;
+
+    font-size: 11px;
+}
+
+.ai-chat__diff-new-number {
+    border-right: 1px solid #2a2d32;
+}
+
+/* =========================================================
+   DIFF MARKER
+   ========================================================= */
+
+.ai-chat__diff-marker {
+    display: flex;
+
+    align-items: center;
+    justify-content: center;
+
+    user-select: none;
+
+    color: #626873;
+
+    background: #15171b;
+
+    font-weight: 600;
+}
+
+/* =========================================================
+   CODE CONTENT
+   ========================================================= */
+
+.ai-chat__diff-content {
+    display: block;
+
+    padding: 0 12px;
+
+    min-width: max-content;
+
+    white-space: pre;
+
+    color: #d7dae0;
+
+    font-family:
+        "Cascadia Code",
+        "Consolas",
+        "SFMono-Regular",
+        monospace;
+
+    font-size: 12px;
+}
+
+/* =========================================================
+   UNCHANGED
+   ========================================================= */
+
+.ai-chat__diff-line--unchanged {
+    background: #101113;
+}
+
+.ai-chat__diff-line--unchanged:hover {
+    background: #181a1e;
+}
+
+/* =========================================================
+   ADDED
+   ========================================================= */
+
+.ai-chat__diff-line--added {
+    background: rgba(46, 160, 67, 0.14);
+}
+
+.ai-chat__diff-line--added .ai-chat__diff-old-number,
+.ai-chat__diff-line--added .ai-chat__diff-new-number,
+.ai-chat__diff-line--added .ai-chat__diff-marker {
+    background: rgba(46, 160, 67, 0.20);
+
+    color: #6ee7a0;
+}
+
+.ai-chat__diff-line--added .ai-chat__diff-content {
+    color: #b8f5ca;
+}
+
+.ai-chat__diff-line--added:hover {
+    background: rgba(46, 160, 67, 0.20);
+}
+
+/* =========================================================
+   REMOVED
+   ========================================================= */
+
+.ai-chat__diff-line--removed {
+    background: rgba(248, 81, 73, 0.13);
+}
+
+.ai-chat__diff-line--removed .ai-chat__diff-old-number,
+.ai-chat__diff-line--removed .ai-chat__diff-new-number,
+.ai-chat__diff-line--removed .ai-chat__diff-marker {
+    background: rgba(248, 81, 73, 0.19);
+
+    color: #ff8585;
+}
+
+.ai-chat__diff-line--removed .ai-chat__diff-content {
+    color: #ffb4b0;
+
+    text-decoration: none;
+}
+
+.ai-chat__diff-line--removed:hover {
+    background: rgba(248, 81, 73, 0.19);
+}
+
+/* =========================================================
+   EMPTY DIFF
+   ========================================================= */
+
+.ai-chat__diff-empty {
+    display: flex;
+
+    align-items: center;
+    justify-content: center;
+
+    min-height: 120px;
+
+    color: #858b94;
+
+    font-size: 12px;
+}
+
+/* =========================================================
+   PREVIEW ACTIONS
+   ========================================================= */
+
+.ai-chat__preview-actions {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+
+    gap: 8px;
+
+    min-height: 52px;
+
+    padding: 9px 14px;
+
+    background: #17191d;
+
+    border-top: 1px solid #292c31;
+}
+
+/* =========================================================
+   REJECT
+   ========================================================= */
+
+.ai-chat__reject-button {
+    height: 32px;
+
+    padding: 0 14px;
+
+    border: 1px solid #34383f;
+    border-radius: 5px;
+
+    background: #202328;
+
+    color: #c8ccd2;
+
     font-size: 12px;
     font-weight: 500;
+
     cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__reject-button:hover {
+    background: #292d33;
+
+    border-color: #484d55;
+
+    color: #ffffff;
+}
+
+/* =========================================================
+   APPLY
+   ========================================================= */
+
+.ai-chat__apply-button {
+    height: 32px;
+
+    padding: 0 16px;
+
+    border: 1px solid #3b82f6;
+    border-radius: 5px;
+
+    background: #2563eb;
+
+    color: #ffffff;
+
+    font-size: 12px;
+    font-weight: 600;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        transform 0.1s ease;
+}
+
+.ai-chat__apply-button:hover {
+    background: #1d4ed8;
+
+    border-color: #60a5fa;
+}
+
+.ai-chat__apply-button:active {
+    transform: translateY(1px);
+}
+
+/* =========================================================
+   PREVIEW BUTTON
+   ========================================================= */
+
+.ai-chat__preview-button {
+    display: inline-flex;
+
+    align-items: center;
+    justify-content: center;
+
+    height: 28px;
+
+    padding: 0 11px;
+
+    border: 1px solid #343941;
+    border-radius: 5px;
+
+    background: #1d2025;
+
+    color: #b8bec7;
+
+    font-size: 11px;
+    font-weight: 500;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__preview-button:hover {
+    background: #282c32;
+
+    border-color: #4b515b;
+
+    color: #ffffff;
+}
+
+/* =========================================================
+   CODE ACTION AREA
+   ========================================================= */
+
+.ai-chat__code-actions {
+    display: flex;
+
+    align-items: center;
+
+    margin-top: 10px;
+}
+
+/* =========================================================
+   RESPONSIVE DIFF
+   ========================================================= */
+
+@media (max-width: 900px) {
+    .ai-chat__preview {
+        max-height: 50%;
+    }
+
+    .ai-chat__diff-line {
+        grid-template-columns:
+            40px 40px 22px minmax(max-content, 1fr);
+    }
+
+    .ai-chat__diff-content {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+}
+
+@media (max-width: 600px) {
+    .ai-chat__preview {
+        min-height: 190px;
+        max-height: 55%;
+    }
+
+    .ai-chat__diff-summary {
+        gap: 8px;
+        padding: 0 10px;
+    }
+
+    .ai-chat__preview-header {
+        padding: 8px 10px;
+    }
+
+    .ai-chat__preview-actions {
+        padding: 8px 10px;
+    }
+}
+
+/* =========================================================
+   AI-2D — SELECTIVE CHANGE CONTROLS
+   ========================================================= */
+
+.ai-chat__hunk-toolbar {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+
+    gap: 6px;
+
+    min-height: 36px;
+
+    padding: 5px 10px;
+
+    background: #131519;
+
+    border-bottom: 1px solid #292c31;
+}
+
+.ai-chat__hunk-button {
+    height: 26px;
+
+    padding: 0 10px;
+
+    border: 1px solid #34383f;
+    border-radius: 4px;
+
+    background: #1d2025;
+
+    color: #aeb4bd;
+
+    font-size: 11px;
+    font-weight: 500;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__hunk-button:hover {
+    background: #282c32;
+
+    border-color: #4a5059;
+
+    color: #ffffff;
+}
+
+/* =========================================================
+   TEST PREVIEW
+   ========================================================= */
+
+.ai-chat__test-preview {
+    margin: 0;
+
+    padding: 14px 16px;
+
+    min-width: max-content;
+
+    color: #d7dae0;
+
+    background: #101113;
+
+    font-family:
+        "Cascadia Code",
+        "Consolas",
+        "SFMono-Regular",
+        monospace;
+
+    font-size: 12px;
+
+    line-height: 20px;
+
+    white-space: pre;
+}
+
+/* =========================================================
+   DISABLED APPLY BUTTON
+   ========================================================= */
+
+.ai-chat__apply-button:disabled {
+    opacity: 0.45;
+
+    cursor: not-allowed;
+
+    transform: none;
+}
+
+/* =========================================================
+   AI-2E — INDIVIDUAL HUNK CONTROLS
+   ========================================================= */
+
+.ai-chat__hunk-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    min-height: 32px;
+
+    padding: 4px 10px;
+
+    background: #191b20;
+
+    border-top: 1px solid #2d3036;
+    border-bottom: 1px solid #292c31;
+}
+
+.ai-chat__hunk-label {
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+
+    min-width: 0;
+}
+
+.ai-chat__hunk-indicator {
+    color: #aeb4bd;
+
+    font-size: 10px;
+    font-weight: 600;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.04em;
+}
+
+.ai-chat__hunk-status {
+    display: inline-flex;
+
+    align-items: center;
+
+    height: 18px;
+
+    padding: 0 7px;
+
+    border-radius: 9px;
+
+    font-size: 9px;
+    font-weight: 600;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.03em;
+}
+
+.ai-chat__hunk-status--accepted {
+    background: rgba(46, 160, 67, 0.15);
+
+    color: #6ee7a0;
+}
+
+.ai-chat__hunk-status--rejected {
+    background: rgba(248, 81, 73, 0.15);
+
+    color: #ff8585;
+}
+
+/* =========================================================
+   HUNK ACTION BUTTON
+   ========================================================= */
+
+.ai-chat__hunk-action {
+    display: inline-flex;
+
+    align-items: center;
+    justify-content: center;
+
+    height: 24px;
+
+    padding: 0 9px;
+
+    border-radius: 4px;
+
+    font-size: 10px;
+    font-weight: 500;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__hunk-action--reject {
+    border: 1px solid #513337;
+
+    background: #241a1c;
+
+    color: #e58b8b;
+}
+
+.ai-chat__hunk-action--reject:hover {
+    background: #302024;
+
+    border-color: #704349;
+
+    color: #ffaaaa;
+}
+
+.ai-chat__hunk-action--accept {
+    border: 1px solid #31563c;
+
+    background: #18231b;
+
+    color: #78d997;
+}
+
+.ai-chat__hunk-action--accept:hover {
+    background: #1d3023;
+
+    border-color: #40734e;
+
+    color: #9af0b5;
+}
+
+/* =========================================================
+   REJECTED HUNK
+   ========================================================= */
+
+.ai-chat__diff-line--rejected {
+    opacity: 0.48;
+}
+
+.ai-chat__diff-line--rejected .ai-chat__diff-content {
+    text-decoration: line-through;
+
+    text-decoration-color: rgba(255,
+            255,
+            255,
+            0.22);
+}
+
+/* =========================================================
+   HUNK SEPARATION
+   ========================================================= */
+
+.ai-chat__hunk-header+.ai-chat__diff-line {
+    border-top: 0;
+}
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 600px) {
+    .ai-chat__hunk-header {
+        padding: 4px 8px;
+    }
+
+    .ai-chat__hunk-action {
+        padding: 0 7px;
+
+        font-size: 9px;
+    }
+
+    .ai-chat__hunk-status {
+        display: none;
+    }
+}
+
+/* =========================================================
+   AI-2F — AI UNDO BAR
+   ========================================================= */
+
+.ai-chat__undo-bar {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 12px;
+
+    min-height: 42px;
+
+    padding: 6px 10px;
+
+    background: #17191d;
+
+    border-top: 1px solid #292c31;
+    border-bottom: 1px solid #292c31;
+}
+
+.ai-chat__undo-message {
+    display: flex;
+
+    align-items: center;
+
+    gap: 7px;
+
+    min-width: 0;
+
+    color: #9ba1aa;
+
+    font-size: 11px;
+}
+
+.ai-chat__undo-icon {
+    display: flex;
+
+    align-items: center;
+    justify-content: center;
+
+    width: 20px;
+    height: 20px;
+
+    color: #8ab4f8;
+
+    font-size: 15px;
+}
+
+.ai-chat__undo-button {
+    flex-shrink: 0;
+
+    height: 27px;
+
+    padding: 0 11px;
+
+    border: 1px solid #3a414b;
+    border-radius: 4px;
+
+    background: #20242a;
+
+    color: #cbd0d7;
+
+    font-size: 11px;
+    font-weight: 500;
+
+    cursor: pointer;
+
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.ai-chat__undo-button:hover {
+    background: #2a2f36;
+
+    border-color: #59616d;
+
+    color: #ffffff;
+}
+
+.ai-chat__undo-button:active {
+    transform: translateY(1px);
+}
+
+/* =========================================================
+   AI-2G — UNDO HISTORY COUNT
+   ========================================================= */
+
+.ai-chat__undo-count {
+    display: inline-flex;
+
+    align-items: center;
+    justify-content: center;
+
+    min-width: 17px;
+    height: 17px;
+
+    margin-left: 6px;
+
+    padding: 0 5px;
+
+    border-radius: 9px;
+
+    background: #303640;
+
+    color: #d5dae1;
+
+    font-size: 9px;
+    font-weight: 600;
+}
+
+/* =========================================================
+   AI-2H — AI CHANGE HISTORY
+   ========================================================= */
+
+.ai-chat__history {
+    flex-shrink: 0;
+
+    border-top: 1px solid #292c31;
+
+    background: #15171a;
+}
+
+.ai-chat__history-header {
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 10px;
+
+    padding: 8px 10px;
+
+    border-bottom: 1px solid #24272c;
+}
+
+.ai-chat__history-title {
+    color: #d8dce2;
+
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.ai-chat__history-subtitle {
+    margin-top: 2px;
+
+    color: #737982;
+
+    font-size: 9px;
+}
+
+.ai-chat__undo-latest {
+    height: 25px;
+
+    padding: 0 9px;
+
+    border: 1px solid #39414b;
+    border-radius: 4px;
+
+    background: #20242a;
+
+    color: #cbd1d9;
+
+    font-size: 10px;
+
+    cursor: pointer;
+
     transition:
         background 0.15s ease,
         border-color 0.15s ease;
 }
 
-.ai-chat__apply-button:hover {
-    background: #2d2d30;
-    border-color: #666666;
+.ai-chat__undo-latest:hover {
+    background: #292e35;
+
+    border-color: #59616c;
+
+    color: #ffffff;
 }
 
-.ai-chat__apply-button:active {
-    background: #333336;
+/* =========================================================
+   HISTORY LIST
+   ========================================================= */
+
+.ai-chat__history-list {
+    max-height: 130px;
+
+    overflow-y: auto;
 }
 
-.ai-chat__action-button {
-    padding: 5px 9px;
-    border: 1px solid #3f3f46;
-    border-radius: 5px;
-    background: #252526;
-    color: #cccccc;
-    font-size: 11px;
-    cursor: pointer;
+.ai-chat__history-item {
+    display: flex;
+
+    align-items: center;
+
+    gap: 8px;
+
+    min-height: 31px;
+
+    padding: 4px 10px;
+
+    border-bottom: 1px solid #202328;
 }
 
-.ai-chat__action-button:hover:not(:disabled) {
-    background: #2d2d30;
-    border-color: #666666;
+.ai-chat__history-item:last-child {
+    border-bottom: none;
 }
 
-.ai-chat__action-button:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+.ai-chat__history-dot {
+    flex-shrink: 0;
+
+    color: #6d7580;
+
+    font-size: 8px;
+}
+
+.ai-chat__history-info {
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 10px;
+
+    min-width: 0;
+
+    width: 100%;
+}
+
+.ai-chat__history-action {
+    overflow: hidden;
+
+    color: #aeb4bd;
+
+    font-size: 10px;
+
+    text-overflow: ellipsis;
+
+    white-space: nowrap;
+}
+
+.ai-chat__history-time {
+    flex-shrink: 0;
+
+    color: #646b75;
+
+    font-size: 9px;
 }

@@ -106,7 +106,16 @@ export default function IDEPage() {
         setSaveError,
     ] = useState("");
 
+    type AIUndoState = {
+        id: string;
+        tabId: string | number;
+        previousContent: string;
+        description: string;
+        timestamp: number;
+    };
 
+    const [aiUndoHistory, setAiUndoHistory] =
+        useState<AIUndoState[]>([]);
     // =========================================
     // Explorer Refresh
     // =========================================
@@ -448,21 +457,55 @@ export default function IDEPage() {
     // =========================================
     // Apply AI Generated Code
     // =========================================
-
     function handleApplyCode(
-        code: string
+        code: string,
+        description = "AI code change",
     ) {
         if (activeTabId === null) {
             return;
         }
 
-        setTabs(
-            currentTabs =>
-                currentTabs.map(
-                    tab => {
+        const activeTab = tabs.find(
+            (tab) =>
+                tab.file.id ===
+                activeTabId,
+        );
 
+        if (!activeTab) {
+            return;
+        }
+
+        /*
+         * Save the current editor content
+         * before applying the AI change.
+         *
+         * Each AI application creates a new
+         * undo history entry.
+         */
+        setAiUndoHistory(
+            (previousHistory) => [
+                ...previousHistory,
+                {
+                    id: `${Date.now()}-${Math.random()}`,
+                    tabId: activeTabId,
+                    previousContent:
+                        activeTab.content,
+                    description,
+                    timestamp: Date.now(),
+                },
+            ],
+        );
+
+        /*
+         * Apply AI-generated content.
+         */
+        setTabs(
+            (currentTabs) =>
+                currentTabs.map(
+                    (tab) => {
                         if (
-                            tab.file.id !== activeTabId
+                            tab.file.id !==
+                            activeTabId
                         ) {
                             return tab;
                         }
@@ -472,13 +515,88 @@ export default function IDEPage() {
                             content: code,
                             isDirty: true,
                         };
-                    }
-                )
+                    },
+                ),
         );
 
         setSaveError("");
     }
 
+    function handleUndoAIChange() {
+        if (activeTabId === null) {
+            return;
+        }
+
+        /*
+         * Find the most recent AI change
+         * belonging to the currently active file.
+         */
+        const historyIndex =
+            [...aiUndoHistory]
+                .reverse()
+                .findIndex(
+                    (entry) =>
+                        entry.tabId ===
+                        activeTabId,
+                );
+
+        if (historyIndex === -1) {
+            return;
+        }
+
+        /*
+         * Convert the reversed index back
+         * to the original array index.
+         */
+        const actualIndex =
+            aiUndoHistory.length -
+            1 -
+            historyIndex;
+
+        const historyEntry =
+            aiUndoHistory[
+            actualIndex
+            ];
+
+        /*
+         * Restore the previous editor content.
+         */
+        setTabs(
+            (currentTabs) =>
+                currentTabs.map(
+                    (tab) => {
+                        if (
+                            tab.file.id !==
+                            activeTabId
+                        ) {
+                            return tab;
+                        }
+
+                        return {
+                            ...tab,
+                            content:
+                                historyEntry.previousContent,
+                            isDirty: true,
+                        };
+                    },
+                ),
+        );
+
+        /*
+         * Remove only the history entry
+         * that we just consumed.
+         */
+        setAiUndoHistory(
+            (previousHistory) =>
+                previousHistory.filter(
+                    (_, index) =>
+                        index !==
+                        actualIndex,
+                ),
+        );
+
+        setSaveError("");
+    }
     // =========================================
     // Switch Tab
     // =========================================
@@ -1703,6 +1821,34 @@ export default function IDEPage() {
                             context={activeTab?.content ?? null}
                             fileName={activeTab?.file.name ?? null}
                             onApplyCode={handleApplyCode}
+                            onUndoCode={handleUndoAIChange}
+                            canUndo={
+                                aiUndoHistory.some(
+                                    (entry) =>
+                                        entry.tabId ===
+                                        activeTabId,
+                                )
+                            }
+                            undoCount={
+                                aiUndoHistory.filter(
+                                    (entry) =>
+                                        entry.tabId ===
+                                        activeTabId,
+                                ).length
+                            }
+                            undoHistory={aiUndoHistory
+                                .filter(
+                                    (entry) =>
+                                        entry.tabId ===
+                                        activeTabId,
+                                )
+                                .map((entry) => ({
+                                    id: entry.id,
+                                    description:
+                                        entry.description,
+                                    timestamp:
+                                        entry.timestamp,
+                                }))}
                         />
 
                     </aside>

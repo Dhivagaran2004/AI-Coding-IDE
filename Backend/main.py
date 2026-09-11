@@ -4,6 +4,8 @@ from App.database.database import engine, Base
 
 from App.models.user import User
 from App.models.project import Project
+from App.models.project_file import ProjectFile
+from App.models.repository_index import RepositoryIndex
 
 from App.routes.auth import router as auth_router
 from App.routes.User import router as user_router
@@ -12,6 +14,7 @@ from App.routes.project_file import router as project_file_router
 from fastapi.middleware.cors import CORSMiddleware
 from App.api.terminal_router import router as terminal_router
 from App.api.ai_router import router as ai_router
+from App.api.file_search_router import router as file_search_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -38,6 +41,7 @@ app.include_router(project_router)
 app.include_router(project_file_router)
 app.include_router(terminal_router)
 app.include_router(ai_router)
+app.include_router(file_search_router)
 
 @app.get("/")
 def home():
