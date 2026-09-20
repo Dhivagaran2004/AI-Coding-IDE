@@ -8,12 +8,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey
 )
-from sqlalchemy.orm import relationship
+
 from App.database.database import Base
 
 
 class Project(Base):
-
     __tablename__ = "projects"
 
     id = Column(
@@ -43,15 +42,15 @@ class Project(Base):
         nullable=False
     )
 
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow
+    user = relationship(
+        "User",
+        back_populates="projects"
     )
 
-    updated_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+    files = relationship(
+        "ProjectFile",
+        back_populates="project",
+        cascade="all, delete-orphan"
     )
     user = relationship(
         "User",

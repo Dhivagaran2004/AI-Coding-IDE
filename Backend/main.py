@@ -4,8 +4,6 @@ from App.database.database import engine, Base
 
 from App.models.user import User
 from App.models.project import Project
-from App.models.project_file import ProjectFile
-from App.models.repository_index import RepositoryIndex
 
 from App.routes.auth import router as auth_router
 from App.routes.User import router as user_router

@@ -5,10 +5,11 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    ForeignKey,
     DateTime,
-    Index,
+    ForeignKey,
+    Index
 )
+
 from sqlalchemy.orm import relationship
 
 from App.database.database import Base
@@ -70,26 +71,22 @@ class ProjectFile(Base):
         nullable=False
     )
 
-    # Relationship with Project
     project = relationship(
         "Project",
         back_populates="files"
     )
 
-    # Parent folder
     parent = relationship(
         "ProjectFile",
         remote_side=[id],
         back_populates="children"
     )
 
-    # Child files/folders
     children = relationship(
         "ProjectFile",
         back_populates="parent",
         cascade="all, delete-orphan"
     )
-
 
 
 Index(
