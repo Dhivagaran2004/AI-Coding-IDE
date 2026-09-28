@@ -1,14 +1,12 @@
-from datetime import datetime
-
 from sqlalchemy import (
     Column,
     Integer,
     String,
     Text,
+    ForeignKey,
     DateTime,
-    ForeignKey
 )
-
+from sqlalchemy.orm import relationship
 from App.database.database import Base
 
 
@@ -42,16 +40,6 @@ class Project(Base):
         nullable=False
     )
 
-    user = relationship(
-        "User",
-        back_populates="projects"
-    )
-
-    files = relationship(
-        "ProjectFile",
-        back_populates="project",
-        cascade="all, delete-orphan"
-    )
     user = relationship(
         "User",
         back_populates="projects"
