@@ -1000,7 +1000,30 @@ export default function FileExplorer({
         );
     }
 
+    // ========================================================
+// Top New Folder
+// ========================================================
 
+    function handleNewFolder() {
+        console.log(
+        "TOP NEW FOLDER BUTTON CLICKED"
+    );
+
+    console.log(
+        "onCreateFolder:",
+        onCreateFolder
+    );
+
+        if (!onCreateFolder) {
+           console.error(
+            "ERROR: onCreateFolder is undefined!"
+        );
+
+        return;
+    }
+
+    onCreateFolder(null);
+}
     // ========================================================
     // Render
     // ========================================================
@@ -1036,7 +1059,14 @@ export default function FileExplorer({
                         />
 
                     </button>
-
+                    {/* New Folder */}
+                    <button
+                        type="button"
+                        title="New Folder"
+                        onClick={handleNewFolder}
+                    >
+                        <FolderPlus size={15} />
+                    </button> 
 
                     {/* Refresh */}
 
@@ -1105,24 +1135,31 @@ export default function FileExplorer({
 
                     <div className="explorer-message">
 
-                        <p>
-                            No files yet.
-                        </p>
-
-
+                    <p>
+                        No files yet.
+                    </p>
+                
+                    <div className="explorer-empty-actions">
+                
                         <button
                             type="button"
-                            onClick={
-                                handleNewFile
-                            }
+                            onClick={handleNewFile}
                         >
-
-                            Create File
-
+                            <FilePlus size={15} />
+                            <span>Create File</span>
                         </button>
-
+                
+                        <button
+                            type="button"
+                            onClick={handleNewFolder}
+                        >
+                            <FolderPlus size={15} />
+                            <span>Create Folder</span>
+                        </button>
+                
                     </div>
-
+                
+                </div>
                 ) : (
 
                     /* Tree */

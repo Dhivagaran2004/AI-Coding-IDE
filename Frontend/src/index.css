@@ -1417,7 +1417,48 @@ textarea:focus-visible {
 
     line-height: 1.4;
 }
+/* =========================================================
+   EXPLORER EMPTY STATE ACTIONS
+   ========================================================= */
 
+   .explorer-empty-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.explorer-empty-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+
+    height: 32px;
+    padding: 0 12px;
+
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+
+    background: #252526;
+    color: #cccccc;
+
+    font-size: 12px;
+    font-family: inherit;
+
+    cursor: pointer;
+}
+
+.explorer-empty-actions button:hover {
+    background: #2d2d30;
+    border-color: #555555;
+    color: #ffffff;
+}
+
+.explorer-empty-actions button svg {
+    flex-shrink: 0;
+}
 
 /* =========================================================
    EDITOR

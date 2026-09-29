@@ -77,24 +77,137 @@ type DiffStats = {
    CODE BLOCK EXTRACTION
    ========================================================= */
 
-function extractCodeBlock(
+   function extractCodeBlock(
     content: string,
+    fileName?: string | null,
 ): string | null {
-    const match = content.match(
-        /```(?:[a-zA-Z0-9_+#.-]+)?\s*([\s\S]*?)```/,
-    );
+    const matches = [
+        ...content.matchAll(
+            /```([a-zA-Z0-9_+#.-]+)?\s*\n?([\s\S]*?)```/g,
+        ),
+    ];
 
-    if (!match) {
+    if (matches.length === 0) {
         return null;
     }
 
-    const code = match[1];
+    type CodeBlock = {
+        language: string;
+        code: string;
+    };
 
-    if (!code.trim()) {
+    const blocks: CodeBlock[] = matches
+        .map((match) => ({
+            language: (match[1] ?? "").toLowerCase(),
+            code: match[2]
+                .replace(/\r\n/g, "\n")
+                .trim(),
+        }))
+        .filter(
+            (block) =>
+                block.code.length > 0,
+        );
+
+    if (blocks.length === 0) {
         return null;
     }
 
-    return code.replace(/\r\n/g, "\n").trim();
+    /*
+     * Determine the language of the currently
+     * opened editor file.
+     */
+    const extension =
+        fileName
+            ?.split(".")
+            .pop()
+            ?.toLowerCase() ?? "";
+
+    const languageAliases: Record<
+        string,
+        string[]
+    > = {
+        py: ["python", "py"],
+        js: ["javascript", "js"],
+        jsx: ["javascript", "jsx", "js"],
+        ts: ["typescript", "ts"],
+        tsx: ["typescript", "tsx", "ts"],
+        java: ["java"],
+        cpp: ["cpp", "c++"],
+        c: ["c"],
+        cs: ["csharp", "cs"],
+        go: ["go", "golang"],
+        rs: ["rust", "rs"],
+        php: ["php"],
+        rb: ["ruby", "rb"],
+        sql: ["sql"],
+        html: ["html"],
+        css: ["css"],
+        scss: ["scss"],
+        json: ["json"],
+        xml: ["xml"],
+        sh: ["bash", "shell", "sh"],
+        ps1: ["powershell", "ps1"],
+    };
+
+    const preferredLanguages =
+        languageAliases[extension] ?? [];
+
+    /*
+     * First preference:
+     * choose the code block matching the
+     * currently opened file.
+     */
+    if (preferredLanguages.length > 0) {
+        const matchingBlock =
+            blocks.find((block) =>
+                preferredLanguages.includes(
+                    block.language,
+                ),
+            );
+
+        if (matchingBlock) {
+            return matchingBlock.code;
+        }
+    }
+
+    /*
+     * Second preference:
+     * Ignore obvious command/config blocks
+     * when another larger implementation block
+     * exists.
+     */
+    const nonCommandBlocks =
+        blocks.filter(
+            (block) =>
+                ![
+                    "bash",
+                    "shell",
+                    "sh",
+                    "powershell",
+                    "ps1",
+                    "cmd",
+                    "console",
+                    "terminal",
+                ].includes(block.language),
+        );
+
+    if (nonCommandBlocks.length > 0) {
+        return nonCommandBlocks.sort(
+            (a, b) =>
+                b.code.length -
+                a.code.length,
+        )[0].code;
+    }
+
+    /*
+     * Final fallback:
+     * choose the largest block.
+     */
+    return blocks.sort(
+        (a, b) =>
+            b.code.length -
+            a.code.length,
+    )[0].code;
 }
 
 /* =========================================================
