@@ -1,13 +1,17 @@
+from pathlib import Path
+
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 
 # LLM_PROVIDER = os.getenv("LLM_PROVIDER", "mock")
