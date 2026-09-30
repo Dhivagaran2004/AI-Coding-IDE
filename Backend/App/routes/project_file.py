@@ -13,12 +13,24 @@ from App.auth.auth import get_current_user
 from App.models.user import User
 from App.models.project import Project
 from App.models.project_file import ProjectFile
+from App.service.AI.index.repository_index_service import (
+    RepositoryIndexService,
+)
+from App.service.AI.index.vector_rag_service import VectorRAGService
 
 from App.schema.project_file_schema import (
     ProjectFileCreate,
     ProjectFileUpdate,
     ProjectFileResponse,
     ProjectFileTree
+)
+from App.schema.ai_schema import CodeAction
+from App.service.AI.code_action_service import (
+    CodeActionService,
+    PatchNotFoundError,
+    PatchValidationError,
+    StalePatchError,
+    UnsupportedPatchOperation,
 )
 
 
@@ -299,6 +311,12 @@ def create_file_or_folder(
     db.commit()
     db.refresh(new_item)
 
+    if new_item.type == "file":
+        RepositoryIndexService(
+            db=db,
+            project_id=project_id,
+        ).create_or_update_index(new_item)
+
     return new_item
 
 
@@ -419,6 +437,8 @@ def update_project_file(
 
         project_file.name = file_data.name
 
+    content_was_updated = file_data.content is not None
+
     # Update content
     if file_data.content is not None:
 
@@ -471,7 +491,60 @@ def update_project_file(
     db.commit()
     db.refresh(project_file)
 
+    if content_was_updated:
+        index_service = RepositoryIndexService(
+            db=db,
+            project_id=project_id,
+        )
+        if index_service.needs_indexing(project_file):
+            index_service.create_or_update_index(project_file)
+    elif project_file.type == "file":
+        VectorRAGService(
+            db=db,
+            project_id=project_id,
+        ).ensure_file_indexed(project_file)
+
     return project_file
+
+
+@router.post(
+    "/{file_id}/patch",
+    response_model=ProjectFileResponse,
+)
+def apply_project_file_patch(
+    project_id: int,
+    file_id: int,
+    action: CodeAction,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return CodeActionService(db).apply_action(
+            project_id=project_id,
+            file_id=file_id,
+            user_id=current_user.id,
+            action=action,
+        )
+    except PatchNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    except StalePatchError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except UnsupportedPatchOperation as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    except PatchValidationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
 
 
 # =========================================================
@@ -503,6 +576,35 @@ def delete_project_file(
     )
 
     item_name = project_file.name
+
+    project_files = (
+        db.query(ProjectFile)
+        .filter(ProjectFile.project_id == project_id)
+        .all()
+    )
+    children_by_parent: dict[int, list[ProjectFile]] = {}
+    for item in project_files:
+        if item.parent_id is not None:
+            children_by_parent.setdefault(item.parent_id, []).append(item)
+
+    file_ids = []
+    pending_ids = [project_file.id]
+    while pending_ids:
+        current_id = pending_ids.pop()
+        current_item = next(
+            (item for item in project_files if item.id == current_id),
+            None,
+        )
+        if current_item is not None and current_item.type == "file":
+            file_ids.append(current_id)
+        pending_ids.extend(
+            child.id for child in children_by_parent.get(current_id, [])
+        )
+
+    VectorRAGService(
+        db=db,
+        project_id=project_id,
+    ).delete_files(file_ids)
 
     db.delete(project_file)
     db.commit()
@@ -574,6 +676,14 @@ def get_project_file_tree(
             if parent_node:
 
                 parent_node.children.append(node)
+
+    def assign_paths(node: ProjectFileTree, parent_path: str = ""):
+        node.path = f"{parent_path}/{node.name}".lstrip("/")
+        for child in node.children:
+            assign_paths(child, node.path)
+
+    for root in roots:
+        assign_paths(root)
 
     return roots
 

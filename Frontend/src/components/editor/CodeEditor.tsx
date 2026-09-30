@@ -2,7 +2,7 @@ import Editor from "@monaco-editor/react";
 
 import type { OnMount } from "@monaco-editor/react";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 
 
@@ -15,6 +15,14 @@ interface CodeEditorProps {
     onChange?: (
         value: string | undefined
     ) => void;
+
+    onSelectionChange?: (
+        selection: {
+            text: string;
+            startLine: number;
+            endLine: number;
+        } | null
+    ) => void;
 }
 
 
@@ -22,6 +30,7 @@ export default function CodeEditor({
     value,
     language,
     onChange,
+    onSelectionChange,
 }: CodeEditorProps) {
 
     const editorRef =
@@ -29,12 +38,39 @@ export default function CodeEditor({
             null
         );
 
+    const selectionListenerRef =
+        useRef<{ dispose: () => void } | null>(null);
+
+    useEffect(() => () => {
+        selectionListenerRef.current?.dispose();
+    }, []);
+
 
     function handleEditorMount(
         editor: Parameters<OnMount>[0]
     ) {
 
         editorRef.current = editor;
+
+        const publishSelection = () => {
+            const selection = editor.getSelection();
+            const model = editor.getModel();
+
+            if (!selection || selection.isEmpty() || !model) {
+                onSelectionChange?.(null);
+                return;
+            }
+
+            onSelectionChange?.({
+                text: model.getValueInRange(selection),
+                startLine: selection.startLineNumber,
+                endLine: selection.endLineNumber,
+            });
+        };
+
+        selectionListenerRef.current =
+            editor.onDidChangeCursorSelection(publishSelection);
+        publishSelection();
 
         editor.focus();
     }

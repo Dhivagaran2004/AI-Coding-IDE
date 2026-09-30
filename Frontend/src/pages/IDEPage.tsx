@@ -15,6 +15,7 @@ import {
     createProjectFile,
     updateProjectFile,
     deleteProjectFile,
+    applyProjectFileCodeAction,
 } from "../services/fileService";
 
 import {
@@ -42,6 +43,8 @@ import type {
 } from "../types/file";
 
 import AIChat from "../components/ai/AIChat";
+import type { TerminalAIContext } from "../services/terminalService";
+import type { CodeAction } from "../services/aiService";
 
 // =========================================
 // Editor Tab Type
@@ -89,6 +92,19 @@ export default function IDEPage() {
     ] = useState<number | null>(
         null
     );
+
+    const [selectedCode, setSelectedCode] = useState<{
+        code: string;
+        startLine: number;
+        endLine: number;
+    } | null>(null);
+
+    const [terminalContext, setTerminalContext] =
+        useState<TerminalAIContext | null>(null);
+
+    useEffect(() => {
+        setSelectedCode(null);
+    }, [activeTabId]);
 
 
     // =========================================
@@ -727,6 +743,28 @@ export default function IDEPage() {
     // =========================================
     // Save Active File
     // =========================================
+
+    async function handleApplyPatch(action: CodeAction) {
+        if (activeTabId === null) {
+            throw new Error("Open a file before applying a patch.");
+        }
+
+        const updatedFile = await applyProjectFileCodeAction(
+            numericProjectId,
+            activeTabId,
+            action,
+        );
+
+        setTabs((currentTabs) =>
+            currentTabs.map((tab) =>
+                tab.file.id === activeTabId
+                    ? { ...tab, content: updatedFile.content ?? "", isDirty: false }
+                    : tab,
+            ),
+        );
+        setSaveError("");
+        setRefreshKey((current) => current + 1);
+    }
 
     async function saveFile() {
 
@@ -1698,6 +1736,17 @@ export default function IDEPage() {
                                                     );
 
                                                 }}
+                                                onSelectionChange={(selection) => {
+                                                    setSelectedCode(
+                                                        selection
+                                                            ? {
+                                                                code: selection.text,
+                                                                startLine: selection.startLine,
+                                                                endLine: selection.endLine,
+                                                            }
+                                                            : null,
+                                                    );
+                                                }}
                                             />
 
                                         </div>
@@ -1773,6 +1822,7 @@ export default function IDEPage() {
                                 projectId={
                                     numericProjectId
                                 }
+                                onResultChange={setTerminalContext}
                             />
 
                         </section>
@@ -1818,8 +1868,22 @@ export default function IDEPage() {
                         }}
                     >
                         <AIChat
+                            projectId={numericProjectId}
                             context={activeTab?.content ?? null}
                             fileName={activeTab?.file.name ?? null}
+                            filePath={activeTab?.file.path ?? activeTab?.file.name ?? null}
+                            language={activeTab?.language ?? null}
+                            selectedCode={
+                                activeTab && selectedCode
+                                    ? {
+                                        filePath: activeTab.file.path ?? activeTab.file.name,
+                                        language: activeTab.language,
+                                        ...selectedCode,
+                                    }
+                                    : null
+                            }
+                                    terminalContext={terminalContext}
+                                    onApplyPatch={handleApplyPatch}
                             onApplyCode={handleApplyCode}
                             onUndoCode={handleUndoAIChange}
                             canUndo={

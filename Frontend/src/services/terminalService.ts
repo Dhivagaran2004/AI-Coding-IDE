@@ -26,6 +26,10 @@ export interface TerminalExecuteResponse {
     success: boolean;
 }
 
+export type TerminalAIContext = TerminalExecuteResponse & {
+    command: string;
+};
+
 
 // =========================================
 // Stop Response

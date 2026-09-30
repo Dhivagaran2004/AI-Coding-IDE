@@ -4,13 +4,16 @@ import {
     useRef,
     useState,
 } from "react";
+import axios from "axios";
 
 import "./AIChat.css";
 
 import {
     sendAIChat,
     type AIMessage,
+    type CodeAction,
 } from "../../services/aiService";
+import type { TerminalAIContext } from "../../services/terminalService";
 
 /* =========================================================
    TYPES
@@ -23,8 +26,20 @@ type AIHistoryItem = {
 };
 
 type AIChatProps = {
+    projectId?: number;
     context?: string | null;
     fileName?: string | null;
+    filePath?: string | null;
+    language?: string | null;
+    selectedCode?: {
+        filePath: string;
+        language: string;
+        code: string;
+        startLine: number;
+        endLine: number;
+    } | null;
+    terminalContext?: TerminalAIContext | null;
+    onApplyPatch?: (action: CodeAction) => Promise<void>;
 
     onApplyCode?: (
         code: string,
@@ -45,6 +60,7 @@ type ChatMessage = {
     role: "user" | "assistant";
     content: string;
     code?: string;
+    codeAction?: CodeAction;
 };
 
 type PreviewAction =
@@ -564,8 +580,14 @@ function buildSelectedCode(
    ========================================================= */
 
 function AIChat({
+    projectId,
     context,
     fileName,
+    filePath,
+    language,
+    selectedCode,
+    terminalContext,
+    onApplyPatch,
     onApplyCode,
     onUndoCode,
     canUndo = false,
@@ -617,6 +639,12 @@ function AIChat({
         null,
     );
 
+    const [previewPatch, setPreviewPatch] =
+        useState<CodeAction | null>(null);
+
+    const [isApplyingPatch, setIsApplyingPatch] =
+        useState(false);
+
     const inputRef =
         useRef<HTMLTextAreaElement | null>(
             null,
@@ -637,11 +665,12 @@ function AIChat({
         }
 
         return createLineDiff(
-            context ?? "",
+            previewPatch?.old_code ?? context ?? "",
             previewCode,
         );
     }, [
         context,
+        previewPatch,
         previewCode,
     ]);
 
@@ -716,11 +745,22 @@ function AIChat({
         messageId: number,
         action: PreviewAction,
     ) => {
+        setPreviewPatch(null);
         setPreviewCode(code);
         setPreviewMessageId(
             messageId,
         );
         setPreviewAction(action);
+    };
+
+    const handlePreviewPatch = (
+        action: CodeAction,
+        messageId: number,
+    ) => {
+        setPreviewPatch(action);
+        setPreviewCode(action.new_code);
+        setPreviewMessageId(messageId);
+        setPreviewAction("general");
     };
 
     /* =====================================================
@@ -729,6 +769,7 @@ function AIChat({
 
     const closePreview = () => {
         setPreviewCode(null);
+        setPreviewPatch(null);
         setPreviewMessageId(null);
         setPreviewAction("general");
     };
@@ -737,10 +778,33 @@ function AIChat({
        APPLY PREVIEW
        ===================================================== */
 
-    const handleApplyPreview = () => {
+    const handleApplyPreview = async () => {
         if (
             previewCode === null
         ) {
+            return;
+        }
+
+        if (previewPatch) {
+            if (!onApplyPatch || isApplyingPatch) {
+                return;
+            }
+            setIsApplyingPatch(true);
+            try {
+                await onApplyPatch(previewPatch);
+                closePreview();
+            } catch (error) {
+                const errorMessage = axios.isAxiosError(error)
+                    ? typeof error.response?.data?.detail === "string"
+                        ? error.response.data.detail
+                        : error.message
+                    : error instanceof Error
+                        ? error.message
+                        : "The patch could not be applied.";
+                addMessage("assistant", `Patch rejected: ${errorMessage}`);
+            } finally {
+                setIsApplyingPatch(false);
+            }
             return;
         }
 
@@ -829,7 +893,27 @@ function AIChat({
                 await sendAIChat({
                     message,
                     history,
-                    context,
+                    context: context && filePath
+                        ? `CURRENT FILE: ${filePath}\nLANGUAGE: ${language ?? ""}\n\n${context}`
+                        : context,
+                    selected_code: selectedCode
+                        ? {
+                            file_path: selectedCode.filePath,
+                            language: selectedCode.language,
+                            code: selectedCode.code.slice(0, 20000),
+                            start_line: selectedCode.startLine,
+                            end_line: selectedCode.endLine,
+                        }
+                        : null,
+                    terminal_context: terminalContext
+                        ? {
+                            ...terminalContext,
+                            command: terminalContext.command.slice(0, 2000),
+                            stdout: terminalContext.stdout.slice(0, 12000),
+                            stderr: terminalContext.stderr.slice(0, 12000),
+                        }
+                        : null,
+                    project_id: projectId,
                 });
 
             /*
@@ -837,9 +921,9 @@ function AIChat({
              * code block from the response.
              */
             const generatedCode =
-                extractCodeBlock(
-                    response.message,
-                );
+                response.code_action?.operation === "replace"
+                    ? response.code_action.new_code
+                    : extractCodeBlock(response.message);
 
             const messageId =
                 Date.now() +
@@ -860,6 +944,9 @@ function AIChat({
                             response.message,
                         code:
                             generatedCode ??
+                            undefined,
+                        codeAction:
+                            response.code_action ??
                             undefined,
                     },
                 ],
@@ -969,8 +1056,20 @@ function AIChat({
 
                         {fileName && (
                             <span className="ai-chat__context">
-                                Context:{" "}
-                                {fileName}
+                                File: {fileName}
+                            </span>
+                        )}
+                        {selectedCode?.code.trim() && (
+                            <span
+                                className="ai-chat__context"
+                                title={`${selectedCode.filePath}:${selectedCode.startLine}-${selectedCode.endLine}`}
+                            >
+                                Selection: lines {selectedCode.startLine}-{selectedCode.endLine}
+                            </span>
+                        )}
+                        {terminalContext && (
+                            <span className="ai-chat__context">
+                                Terminal: exit {terminalContext.exit_code}
                             </span>
                         )}
                     </div>
@@ -1098,18 +1197,25 @@ function AIChat({
 
                                     {message.role ===
                                         "assistant" &&
-                                        message.code && (
+                                        (message.code || message.codeAction) && (
                                             <div className="ai-chat__code-actions">
                                                 <button
                                                     type="button"
                                                     className="ai-chat__preview-button"
-                                                    onClick={() =>
-                                                        handlePreviewCode(
-                                                            message.code!,
-                                                            message.id,
-                                                            messageAction,
-                                                        )
-                                                    }
+                                                    onClick={() => {
+                                                        if (message.codeAction) {
+                                                            handlePreviewPatch(
+                                                                message.codeAction,
+                                                                message.id,
+                                                            );
+                                                        } else if (message.code) {
+                                                            handlePreviewCode(
+                                                                message.code,
+                                                                message.id,
+                                                                messageAction,
+                                                            );
+                                                        }
+                                                    }}
                                                 >
                                                     {previewMessageId ===
                                                     message.id
@@ -1160,11 +1266,14 @@ function AIChat({
                     <div className="ai-chat__preview-header">
                         <div>
                             <span className="ai-chat__preview-title">
-                                AI Proposed Changes
+                                {previewPatch
+                                    ? `AI Proposed Changes: ${previewPatch.file_path}`
+                                    : "AI Proposed Changes"}
                             </span>
 
                             <span className="ai-chat__preview-subtitle">
-                                Review changes before applying to editor
+                                {previewPatch?.description ??
+                                    "Review changes before applying to editor"}
                             </span>
                         </div>
 
@@ -1258,8 +1367,9 @@ function AIChat({
                             onClick={
                                 handleApplyPreview
                             }
+                            disabled={isApplyingPatch}
                         >
-                            Apply to Editor
+                            {isApplyingPatch ? "Applying..." : "Apply"}
                         </button>
                     </div>
                 </div>

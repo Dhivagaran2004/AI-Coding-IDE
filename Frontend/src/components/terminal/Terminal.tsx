@@ -6,6 +6,7 @@ import {
 import {
     executeTerminalCommand,
     stopTerminalCommand,
+    type TerminalAIContext,
 } from "../../services/terminalService";
 
 
@@ -15,6 +16,7 @@ import {
 
 interface TerminalProps {
     projectId: number;
+    onResultChange?: (result: TerminalAIContext | null) => void;
 }
 
 
@@ -94,6 +96,7 @@ function getErrorMessage(
 
 export default function Terminal({
     projectId,
+    onResultChange,
 }: TerminalProps) {
 
     // =========================================
@@ -319,6 +322,11 @@ export default function Terminal({
                     trimmedCommand
                 );
 
+            onResultChange?.({
+                ...result,
+                command: trimmedCommand,
+            });
+
 
             console.log(
                 "Terminal response:",
@@ -403,6 +411,14 @@ export default function Terminal({
                     error,
                     "Failed to execute command."
                 );
+
+            onResultChange?.({
+                command: trimmedCommand,
+                exit_code: 1,
+                stdout: "",
+                stderr: message,
+                success: false,
+            });
 
 
             setOutput(
@@ -552,6 +568,8 @@ export default function Terminal({
     // =========================================
 
     function handleClear() {
+
+        onResultChange?.(null);
 
         setOutput([
             "AI Coding IDE Terminal",

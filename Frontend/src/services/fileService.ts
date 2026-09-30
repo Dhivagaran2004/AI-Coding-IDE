@@ -6,6 +6,7 @@ import type {
     ProjectFileCreate,
     ProjectFileUpdate,
 } from "../types/file";
+import type { CodeAction } from "./aiService";
 
 
 export async function getProjectFileTree(
@@ -61,6 +62,19 @@ export async function updateProjectFile(
             data
         );
 
+    return response.data;
+}
+
+
+export async function applyProjectFileCodeAction(
+    projectId: number,
+    fileId: number,
+    action: CodeAction,
+): Promise<ProjectFile> {
+    const response = await api.post<ProjectFile>(
+        `/projects/${projectId}/files/${fileId}/patch`,
+        action,
+    );
     return response.data;
 }
 

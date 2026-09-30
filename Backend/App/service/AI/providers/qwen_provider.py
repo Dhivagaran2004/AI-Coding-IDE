@@ -50,6 +50,13 @@ class QwenProvider(BaseLLMProvider):
 
                     "Do not invent files or project information "
                     "that is not present in the provided context."
+
+                    "When the user explicitly requests a change to an existing file, "
+                    "include one fenced JSON code action with type code_change, "
+                    "operation replace, file_path, 1-based start_line and end_line, "
+                    "old_code copied exactly from context, new_code, and description. "
+                    "Do not emit an action if exact old_code or its line range is "
+                    "uncertain. Never apply changes; the user must approve them."
                 ),
             }
         ]

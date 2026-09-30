@@ -39,6 +39,7 @@ class ProjectFileTree(BaseModel):
     parent_id: Optional[int] = None
     name: str
     type: str
+    path: Optional[str] = None
     content: Optional[str] = None
     language: Optional[str] = None
     children: List["ProjectFileTree"] = []
