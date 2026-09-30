@@ -13,7 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from App.api.terminal_router import router as terminal_router
 from App.api.ai_router import router as ai_router
 from App.api.file_search_router import router as file_search_router
-
+from App.api.repository_index_router import (
+    router as repository_index_router,
+)
 Base.metadata.create_all(bind=engine)
 
 
@@ -40,6 +42,7 @@ app.include_router(project_file_router)
 app.include_router(terminal_router)
 app.include_router(ai_router)
 app.include_router(file_search_router)
+app.include_router(repository_index_router) 
 
 @app.get("/")
 def home():

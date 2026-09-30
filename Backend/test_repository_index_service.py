@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from App.models.project_file import ProjectFile
 from App.models.repository_index import RepositoryIndex
 from App.service.AI.index.repository_index_service import (
     RepositoryIndexService,
@@ -13,8 +14,9 @@ class FakeFile:
 
 
 class FakeQuery:
-    def __init__(self, result=None):
+    def __init__(self, result=None, files=None):
         self.result = result
+        self.files = files
 
     def filter(self, *args):
         return self
@@ -22,16 +24,28 @@ class FakeQuery:
     def first(self):
         return self.result
 
+    def all(self):
+        if self.files is not None:
+            return self.files
+        return []
+
 
 class FakeDB:
-    def __init__(self, existing_index=None):
+    def __init__(
+        self,
+        existing_index=None,
+        files=None,
+    ):
         self.existing_index = existing_index
+        self.files = files or []
         self.added = None
         self.committed = False
         self.refreshed = None
 
     def query(self, model):
-        return FakeQuery(self.existing_index)
+        if model is ProjectFile:
+            return FakeQuery(files=self.files)
+        return FakeQuery(result=self.existing_index)
 
     def add(self, obj):
         self.added = obj
@@ -258,3 +272,19 @@ def test_update_existing_index():
     assert db.committed is True
     assert db.refreshed is result
 
+def test_index_project_empty_project():
+    db = FakeDB(files=[])
+
+    service = RepositoryIndexService(
+        db=db,
+        project_id=1,
+    )
+
+    result = service.index_project()
+
+    assert result["project_id"] == 1
+    assert result["total_files"] == 0
+    assert result["indexed_count"] == 0
+    assert result["skipped_count"] == 0
+    assert result["indexed_files"] == []
+    assert result["skipped_files"] == []

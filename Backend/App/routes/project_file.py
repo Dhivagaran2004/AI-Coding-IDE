@@ -20,7 +20,9 @@ from App.schema.project_file_schema import (
     ProjectFileResponse,
     ProjectFileTree
 )
-
+from App.service.AI.index.repository_index_service import (
+    RepositoryIndexService,
+)
 
 router = APIRouter(
     prefix="/projects/{project_id}/files",
@@ -294,12 +296,21 @@ def create_file_or_folder(
             language=file_data.language
         )
 
-    # 6. Save
-    db.add(new_item)
     db.commit()
-    db.refresh(new_item)
+    db.refresh(project_file)
 
-    return new_item
+    # Update repository index after file changes
+    if project_file.type == "file":
+        index_service = RepositoryIndexService(
+            db=db,
+            project_id=project_id,
+        )
+
+        index_service.create_or_update_index(
+            project_file
+        )
+
+    return project_file
 
 
 # =========================================================
@@ -470,6 +481,17 @@ def update_project_file(
 
     db.commit()
     db.refresh(project_file)
+
+    # Update repository index after file changes
+    if project_file.type == "file":
+        index_service = RepositoryIndexService(
+            db=db,
+            project_id=project_id,
+        )
+
+        index_service.create_or_update_index(
+            project_file
+        )
 
     return project_file
 
