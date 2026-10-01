@@ -13,6 +13,9 @@ from App.auth.auth import get_current_user
 from App.models.user import User
 from App.models.project import Project
 from App.models.project_file import ProjectFile
+from App.service.AI.index.repository_index_service import (
+    RepositoryIndexService,
+)
 
 from App.schema.project_file_schema import (
     ProjectFileCreate,
@@ -26,6 +29,21 @@ router = APIRouter(
     prefix="/projects/{project_id}/files",
     tags=["Project Files"]
 )
+
+
+def update_repository_index(
+    db: Session,
+    project_id: int,
+    project_file: ProjectFile,
+) -> None:
+    index_service = RepositoryIndexService(
+        db=db,
+        project_id=project_id,
+    )
+    if index_service.should_index_file(project_file):
+        index_service.create_or_update_index(project_file)
+    else:
+        index_service.remove_index(project_file.id)
 
 
 # =========================================================
@@ -299,6 +317,9 @@ def create_file_or_folder(
     db.commit()
     db.refresh(new_item)
 
+    if new_item.type == "file":
+        update_repository_index(db, project_id, new_item)
+
     return new_item
 
 
@@ -470,6 +491,9 @@ def update_project_file(
 
     db.commit()
     db.refresh(project_file)
+
+    if project_file.type == "file":
+        update_repository_index(db, project_id, project_file)
 
     return project_file
 

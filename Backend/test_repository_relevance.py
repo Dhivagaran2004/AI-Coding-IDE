@@ -1,6 +1,7 @@
 from App.service.AI.context.repository_relevance import (
     RepositoryRelevanceService,
 )
+from App.models.repository_index import RepositoryIndex
 
 
 class FakeProjectFile:
@@ -46,6 +47,17 @@ class FakeDB:
         self.files = files
 
     def query(self, model):
+        return FakeQuery(self.files)
+
+
+class IndexedFakeDB(FakeDB):
+    def __init__(self, files, indexes):
+        super().__init__(files)
+        self.indexes = indexes
+
+    def query(self, model):
+        if model is RepositoryIndex:
+            return FakeQuery(self.indexes)
         return FakeQuery(self.files)
 
 
@@ -104,6 +116,48 @@ def connect_database():
     )
 
     assert "authenticate_user" in result.content
+
+
+def test_ready_indexed_content_replaces_live_file_content():
+    file = FakeProjectFile(
+        id=1,
+        name="auth.py",
+        content="authentication current version",
+        language="python",
+    )
+    index = RepositoryIndex(
+        project_id=1,
+        file_id=1,
+        content_hash="hash",
+        status="ready",
+        indexed_content="authentication indexed version",
+    )
+    service = RepositoryRelevanceService(
+        db=IndexedFakeDB([file], [index]),
+        project_id=1,
+    )
+
+    result = service.build_context("authentication")
+
+    assert "authentication indexed version" in result.content
+    assert "authentication current version" not in result.content
+
+
+def test_missing_index_falls_back_to_search_content():
+    file = FakeProjectFile(
+        id=1,
+        name="auth.py",
+        content="authentication current version",
+        language="python",
+    )
+    service = RepositoryRelevanceService(
+        db=IndexedFakeDB([file], []),
+        project_id=1,
+    )
+
+    result = service.build_context("authentication")
+
+    assert "authentication current version" in result.content
 
 
 # =========================================================

@@ -8,8 +8,8 @@ from App.schema.ai_schema import (
     AIChatResponse,
 )
 from App.service.AI.ai_service import AIService
-from App.service.AI.context.repository_relevance import (
-    RepositoryRelevanceService,
+from App.service.AI.context.repository_question_service import (
+    RepositoryQuestionService,
 )
 from App.service.AI.providers.provider_factory import (
     get_llm_provider,
@@ -93,7 +93,7 @@ async def chat(
         if project_id is not None:
 
             relevance_service = (
-                RepositoryRelevanceService(
+                RepositoryQuestionService(
                     db=db,
                     project_id=project_id,
                 )
@@ -101,7 +101,7 @@ async def chat(
 
             repository_result = (
                 relevance_service.build_context(
-                    query=request.message,
+                    question=request.message,
                 )
             )
 

@@ -177,3 +177,117 @@ def test_project_id_without_repository_match_still_calls_ai(
 
     finally:
         ai_router.ai_service = original_service
+
+
+def test_natural_repository_question_adds_matching_file_context():
+    fake_service = FakeAIService()
+    fake_files = [
+        FakeFile(
+            file_id=1,
+            name="project.py",
+            content="def create_project(data):\n    return Project()",
+        ),
+        FakeFile(
+            file_id=2,
+            name="terminal.py",
+            content="def execute_command(command):\n    pass",
+        ),
+    ]
+    app, original_service = create_test_app(fake_service, fake_files)
+
+    try:
+        response = TestClient(app).post(
+            "/ai/chat",
+            json={
+                "message": "Which file creates projects?",
+                "project_id": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        assert "project.py" in fake_service.last_context
+        assert "create_project" in fake_service.last_context
+        assert "terminal.py" not in fake_service.last_context
+    finally:
+        ai_router.ai_service = original_service
+
+
+def test_multi_file_question_adds_frontend_and_backend_context():
+    fake_service = FakeAIService()
+    fake_files = [
+        FakeFile(
+            file_id=1,
+            name="LoginPage.tsx",
+            content="frontend login form submits credentials to the API",
+        ),
+        FakeFile(
+            file_id=2,
+            name="auth.py",
+            content="backend login route validates credentials",
+        ),
+        FakeFile(
+            file_id=3,
+            name="terminal.py",
+            content="execute terminal commands",
+        ),
+    ]
+    app, original_service = create_test_app(fake_service, fake_files)
+
+    try:
+        response = TestClient(app).post(
+            "/ai/chat",
+            json={
+                "message": "Explain the login flow from frontend to backend.",
+                "project_id": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        assert "LoginPage.tsx" in fake_service.last_context
+        assert "auth.py" in fake_service.last_context
+        assert "terminal.py" not in fake_service.last_context
+    finally:
+        ai_router.ai_service = original_service
+
+
+def test_repository_context_preserves_editor_context_and_history():
+    fake_service = FakeAIService()
+    fake_files = [
+        FakeFile(
+            file_id=1,
+            name="auth.py",
+            content="def authenticate_user(credentials): return True",
+        ),
+        FakeFile(
+            file_id=2,
+            name="terminal.py",
+            content="def execute_command(command): pass",
+        ),
+    ]
+    app, original_service = create_test_app(fake_service, fake_files)
+
+    try:
+        response = TestClient(app).post(
+            "/ai/chat",
+            json={
+                "message": "Where is authentication handled?",
+                "project_id": 1,
+                "context": "CURRENT EDITOR: selected auth.py function",
+                "history": [
+                    {"role": "user", "content": "Earlier question"},
+                    {"role": "assistant", "content": "Earlier answer"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert "CURRENT EDITOR: selected auth.py function" in fake_service.last_context
+        assert "auth.py" in fake_service.last_context
+        assert "authenticate_user" in fake_service.last_context
+        assert "terminal.py" not in fake_service.last_context
+        assert fake_service.last_history == [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+    finally:
+        ai_router.ai_service = original_service

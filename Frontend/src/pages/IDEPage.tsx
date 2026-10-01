@@ -1773,6 +1773,21 @@ export default function IDEPage() {
                                 projectId={
                                     numericProjectId
                                 }
+                                fileId={
+                                    activeTab?.file.type === "file"
+                                        ? activeTab.file.id
+                                        : null
+                                }
+                                fileName={
+                                    activeTab?.file.type === "file"
+                                        ? activeTab.file.name
+                                        : null
+                                }
+                                code={
+                                    activeTab?.file.type === "file"
+                                        ? activeTab.content
+                                        : null
+                                }
                             />
 
                         </section>

@@ -14,6 +14,21 @@ class RepositoryIndexService:
     changed by comparing a SHA-256 content hash.
     """
 
+    IGNORED_FILE_NAMES = {
+        ".env",
+        ".env.local",
+        ".env.production",
+        ".env.development",
+        "id_rsa",
+        "id_rsa.pub",
+    }
+
+    IGNORED_EXTENSIONS = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp",
+        ".pdf", ".zip", ".tar", ".gz", ".7z", ".exe", ".dll",
+        ".so", ".bin", ".pyc", ".class", ".o", ".obj", ".lock",
+    }
+
     def __init__(
         self,
         db: Session,
@@ -55,6 +70,14 @@ class RepositoryIndexService:
             .first()
         )
 
+    def remove_index(self, file_id: int) -> None:
+        existing_index = self.get_index(file_id)
+        if existing_index is None:
+            return
+
+        self.db.delete(existing_index)
+        self.db.commit()
+
     def needs_indexing(
         self,
         file: ProjectFile,
@@ -80,10 +103,24 @@ class RepositoryIndexService:
         if existing_index.content_hash != current_hash:
             return True
 
-        if existing_index.status == "failed":
+        if existing_index.status not in {"ready", "indexed"}:
             return True
 
         return False
+
+    @classmethod
+    def should_index_file(cls, file: ProjectFile) -> bool:
+        if file.type != "file":
+            return False
+
+        file_name = (file.name or "").strip().lower()
+        if not file_name or file_name in cls.IGNORED_FILE_NAMES:
+            return False
+
+        return not any(
+            file_name.endswith(extension)
+            for extension in cls.IGNORED_EXTENSIONS
+        )
 
     def create_or_update_index(
         self,
@@ -100,26 +137,53 @@ class RepositoryIndexService:
 
         existing_index = self.get_index(file.id)
 
+        if (
+            existing_index is not None
+            and existing_index.status in {"ready", "indexed"}
+            and existing_index.content_hash == content_hash
+        ):
+            return existing_index
+
         if existing_index is None:
             existing_index = RepositoryIndex(
                 project_id=self.project_id,
                 file_id=file.id,
                 content_hash=content_hash,
                 status="pending",
-                indexed_content=file.content,
+                indexed_content=None,
             )
 
             self.db.add(existing_index)
 
         else:
-            existing_index.content_hash = content_hash
             existing_index.status = "pending"
-            existing_index.indexed_content = file.content
 
-        self.db.commit()
-        self.db.refresh(existing_index)
+        previous_hash = existing_index.content_hash
+        previous_content = existing_index.indexed_content
+
+        try:
+            self.db.commit()
+            indexed_content = self._get_indexed_content(file)
+            existing_index.content_hash = content_hash
+            existing_index.indexed_content = indexed_content
+            existing_index.status = "ready"
+            self.db.commit()
+            self.db.refresh(existing_index)
+        except Exception:
+            self.db.rollback()
+            if self.get_index(file.id) is None:
+                self.db.add(existing_index)
+            existing_index.content_hash = previous_hash
+            existing_index.indexed_content = previous_content
+            existing_index.status = "failed"
+            self.db.commit()
+            raise
 
         return existing_index
+
+    @staticmethod
+    def _get_indexed_content(file: ProjectFile) -> str:
+        return file.content or ""
 
     def index_project(self) -> dict:
         """
@@ -141,16 +205,32 @@ class RepositoryIndexService:
 
         indexed_count = 0
         skipped_count = 0
+        failed_count = 0
 
         indexed_files = []
         skipped_files = []
+        failed_files = []
+        errors = []
 
         for file in files:
-            if self.needs_indexing(file):
-                self.create_or_update_index(file)
+            if not self.should_index_file(file):
+                self.remove_index(file.id)
+                skipped_count += 1
+                skipped_files.append(file.id)
+                continue
 
-                indexed_count += 1
-                indexed_files.append(file.id)
+            if self.needs_indexing(file):
+                try:
+                    self.create_or_update_index(file)
+                    indexed_count += 1
+                    indexed_files.append(file.id)
+                except Exception as exc:
+                    failed_count += 1
+                    failed_files.append(file.id)
+                    errors.append({
+                        "file_id": file.id,
+                        "error": str(exc),
+                    })
             else:
                 skipped_count += 1
                 skipped_files.append(file.id)
@@ -162,4 +242,7 @@ class RepositoryIndexService:
             "skipped_count": skipped_count,
             "indexed_files": indexed_files,
             "skipped_files": skipped_files,
+            "failed_count": failed_count,
+            "failed_files": failed_files,
+            "errors": errors,
         }

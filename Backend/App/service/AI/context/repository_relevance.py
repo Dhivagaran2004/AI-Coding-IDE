@@ -1,8 +1,12 @@
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
 
 from App.service.AI.context.relevant_context import (
     RelevantContextSelector,
     SelectedContext,
+)
+from App.service.AI.index.indexed_context_service import (
+    IndexedContextService,
 )
 from App.service.AI.ranking.context_ranker import (
     ContextRanker,
@@ -11,6 +15,9 @@ from App.service.AI.search.file_search import (
     FileSearchResult,
     FileSearchService,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,6 +48,10 @@ class RepositoryRelevanceService:
             db=db,
             project_id=project_id,
         )
+        self.db = db
+        self.project_id = project_id
+        self.max_chars = max_chars
+        self.max_files = max_files
 
         self.ranker = ContextRanker()
 
@@ -90,6 +101,52 @@ class RepositoryRelevanceService:
                 ranked_results,
             )
         )
+
+        if selected_context.files:
+            indexed_by_id = {}
+            try:
+                indexed_context = IndexedContextService(
+                    db=self.db,
+                    project_id=self.project_id,
+                    max_chars=self.max_chars,
+                    max_files=self.max_files,
+                ).build_context(
+                    file_ids=[
+                        result.file_id
+                        for result in selected_context.files
+                    ]
+                )
+                indexed_by_id = {
+                    indexed_file.file_id: indexed_file.content
+                    for indexed_file in indexed_context.files
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Indexed repository context unavailable for project %s: %s",
+                    self.project_id,
+                    exc,
+                )
+
+            if indexed_by_id:
+                selected_ids = {
+                    result.file_id
+                    for result in selected_context.files
+                }
+                selected_results = [
+                    replace(
+                        result,
+                        content=indexed_by_id.get(
+                            result.file_id,
+                            result.content,
+                        ),
+                    )
+                    for result in ranked_results
+                    if result.file_id in selected_ids
+                ]
+                selected_context = self.selector.select(
+                    query,
+                    selected_results,
+                )
 
         return RepositoryRelevanceResult(
             query=query,
