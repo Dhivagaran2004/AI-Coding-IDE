@@ -50,6 +50,28 @@ def _extract_code_action(message: str) -> CodeAction | None:
     return None
 
 
+def _extract_plan(message: str) -> list[str] | None:
+    candidates = [message]
+    candidates.extend(
+        match.group(1)
+        for match in re.finditer(
+            r"```(?:json)?\s*([\s\S]*?)```",
+            message,
+            flags=re.IGNORECASE,
+        )
+    )
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("plan"), list):
+            steps = payload["plan"]
+            if len(steps) <= 12 and all(isinstance(step, str) for step in steps):
+                return [step[:500] for step in steps]
+    return None
+
+
 # =========================================================
 # AI SERVICE
 # =========================================================
@@ -253,8 +275,29 @@ async def chat(
             )
             context = context[:MAX_AI_CONTEXT_CHARS]
 
+        mode_instructions = {
+            "plan": (
+                "Planning mode: analyze the requested task and return only "
+                "a JSON object with a 'plan' array of concise, ordered steps. "
+                "Do not generate a patch or claim to have modified files."
+            ),
+            "edit": (
+                "Edit mode: propose a minimal structured code change. "
+                "Include a valid code_change JSON object in a fenced json "
+                "block with exact file_path, operation, line range, old_code, "
+                "new_code, and description. The user must review and approve "
+                "it before it is applied."
+            ),
+        }
+        message = request.message
+        if request.mode in mode_instructions:
+            message = (
+                f"{mode_instructions[request.mode]}\n\n"
+                f"USER TASK:\n{request.message}"
+            )
+
         response = await ai_service.chat(
-            message=request.message,
+            message=message,
             context=context,
             history=history,
         )
@@ -263,7 +306,12 @@ async def chat(
             message=response,
             provider=LLM_PROVIDER,
             model=LLM_MODEL,
-            code_action=_extract_code_action(response),
+            code_action=(
+                _extract_code_action(response)
+                if request.mode != "plan"
+                else None
+            ),
+            plan=_extract_plan(response) if request.mode == "plan" else None,
         )
 
     except HTTPException:

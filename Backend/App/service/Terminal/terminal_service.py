@@ -48,12 +48,28 @@ class TerminalService:
             self.workspace_root / str(project_id)
         )
 
-        project_directory.mkdir(
+        resolved_directory = project_directory.resolve()
+        try:
+            resolved_directory.relative_to(self.workspace_root)
+        except ValueError as error:
+            raise FileNotFoundError(
+                "Project workspace is outside the allowed root."
+            ) from error
+
+        resolved_directory.mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        return project_directory
+        resolved_directory = resolved_directory.resolve()
+        try:
+            resolved_directory.relative_to(self.workspace_root)
+        except ValueError as error:
+            raise FileNotFoundError(
+                "Project workspace is outside the allowed root."
+            ) from error
+
+        return resolved_directory
 
     # =========================================================
     # Validate Project Workspace
@@ -88,6 +104,7 @@ class TerminalService:
         self,
         project_id: int,
         command: str,
+        timeout_seconds: int | None = None,
     ) -> TerminalResult:
 
         if not command or not command.strip():
@@ -118,14 +135,32 @@ class TerminalService:
 
         try:
 
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                timeout_message = (
+                    f"Command timed out after {timeout_seconds} seconds."
+                )
+                stderr = f"{stderr or ''}\n{timeout_message}".strip()
+                return TerminalResult(
+                    exit_code=-1,
+                    stdout=(stdout or "")[-12000:],
+                    stderr=stderr[-12000:],
+                    success=False,
+                )
 
             exit_code = process.returncode
 
             return TerminalResult(
                 exit_code=exit_code,
-                stdout=stdout,
-                stderr=stderr,
+                stdout=stdout[-12000:],
+                stderr=stderr[-12000:],
                 success=exit_code == 0,
             )
 

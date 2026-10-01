@@ -19,6 +19,7 @@ export type AIMessage = {
 
 export type AIChatRequest = {
     message: string;
+    mode?: "ask" | "plan" | "edit";
     context?: string | null;
     selected_code?: {
         file_path: string;
@@ -32,11 +33,39 @@ export type AIChatRequest = {
     project_id?: number;
 };
 
+export type AgentTask = {
+    id: string;
+    project_id: number;
+    task: string;
+    mode: "agent";
+    status: "pending" | "planning" | "awaiting_approval" | "executing" | "validating" | "failed" | "completed" | "cancelled";
+    plan: string[];
+    actions: {
+        action: CodeAction;
+        status: "awaiting_approval" | "applied" | "rejected" | "failed";
+        error?: string | null;
+    }[];
+    validation_command?: string | null;
+    validation_result?: TerminalAIContext | null;
+    steps: {
+        sequence: number;
+        type: string;
+        status: string;
+        description: string;
+        output?: string;
+        error?: string | null;
+    }[];
+    stop_reason?: string | null;
+    iteration: number;
+    changes?: { path: string; content: string; file_id: number }[];
+};
+
 export type AIChatResponse = {
     message: string;
     provider: string;
     model: string;
     code_action?: CodeAction | null;
+    plan?: string[] | null;
 };
 
 export async function sendAIChat(
@@ -60,4 +89,60 @@ export async function sendAIChat(
 
         throw new Error(errorMessage);
     }
+}
+
+export async function createAgentTask(
+    projectId: number,
+    task: string,
+    context?: {
+        context?: string | null;
+        current_file_path?: string | null;
+        selected_code?: AIChatRequest["selected_code"];
+        terminal_context?: TerminalAIContext | null;
+    },
+): Promise<AgentTask> {
+    const response = await api.post<AgentTask>("/ai/agent/tasks", {
+        project_id: projectId,
+        task,
+        ...context,
+    });
+    return response.data;
+}
+
+export async function getAgentTask(taskId: string): Promise<AgentTask> {
+    const response = await api.get<AgentTask>(`/ai/agent/tasks/${taskId}`);
+    return response.data;
+}
+
+export async function approveAgentChanges(
+    taskId: string,
+    approval: { action_indexes?: number[]; reject_indexes?: number[]; accept_all?: boolean; reject_all?: boolean },
+): Promise<AgentTask> {
+    const response = await api.post<AgentTask>(
+        `/ai/agent/tasks/${taskId}/approve`,
+        approval,
+    );
+    return response.data;
+}
+
+export async function approveAgentValidation(
+    taskId: string,
+    command: string,
+    approved: boolean,
+): Promise<AgentTask> {
+    const response = await api.post<AgentTask>(
+        `/ai/agent/tasks/${taskId}/validate`,
+        { command, approved },
+    );
+    return response.data;
+}
+
+export async function continueAgentTask(taskId: string): Promise<AgentTask> {
+    const response = await api.post<AgentTask>(`/ai/agent/tasks/${taskId}/continue`);
+    return response.data;
+}
+
+export async function cancelAgentTask(taskId: string): Promise<AgentTask> {
+    const response = await api.post<AgentTask>(`/ai/agent/tasks/${taskId}/cancel`);
+    return response.data;
 }

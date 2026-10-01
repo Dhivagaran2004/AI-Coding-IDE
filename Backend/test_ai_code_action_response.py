@@ -78,3 +78,29 @@ def test_chat_omits_invalid_structured_code_action():
         assert result.json()["code_action"] is None
     finally:
         ai_router.ai_service = original_service
+
+
+def test_plan_mode_returns_structured_plan_without_code_action():
+    response_text = '''```json
+{"plan": ["Inspect the router", "Add a schema", "Run focused tests"]}
+```
+```json
+{"type":"code_change","operation":"replace","file_path":"main.py","description":"Change code","start_line":1,"end_line":1,"old_code":"pass","new_code":"return None"}
+```'''
+    client, original_service = make_client(response_text)
+
+    try:
+        result = client.post(
+            "/ai/chat",
+            json={"message": "Make a coding plan", "mode": "plan"},
+        )
+
+        assert result.status_code == 200
+        assert result.json()["plan"] == [
+            "Inspect the router",
+            "Add a schema",
+            "Run focused tests",
+        ]
+        assert result.json()["code_action"] is None
+    finally:
+        ai_router.ai_service = original_service

@@ -1869,6 +1869,17 @@ export default function IDEPage() {
                     >
                         <AIChat
                             projectId={numericProjectId}
+                            hasUnsavedChanges={tabs.some((tab) => tab.isDirty)}
+                            onAgentChangesApplied={(changes) => {
+                                setTabs((currentTabs) => currentTabs.map((tab) => {
+                                    const changedFile = changes.find((change) => change.file_id === tab.file.id);
+                                    return changedFile && !tab.isDirty
+                                        ? { ...tab, content: changedFile.content, isDirty: false }
+                                        : tab;
+                                }));
+                                setRefreshKey((current) => current + 1);
+                                setSaveError("");
+                            }}
                             context={activeTab?.content ?? null}
                             fileName={activeTab?.file.name ?? null}
                             filePath={activeTab?.file.path ?? activeTab?.file.name ?? null}

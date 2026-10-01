@@ -124,6 +124,8 @@ class AIChatRequest(BaseModel):
         description="Current message sent by the user.",
     )
 
+    mode: Literal["ask", "plan", "edit"] = "ask"
+
     context: str | None = Field(
         default=None,
         max_length=50000,
@@ -174,4 +176,5 @@ class AIChatResponse(BaseModel):
     provider: str
     model: str
     code_action: CodeAction | None = None
+    plan: list[str] | None = None
 

@@ -9,7 +9,14 @@ import axios from "axios";
 import "./AIChat.css";
 
 import {
+    approveAgentChanges,
+    approveAgentValidation,
+    cancelAgentTask,
+    continueAgentTask,
+    createAgentTask,
+    getAgentTask,
     sendAIChat,
+    type AgentTask,
     type AIMessage,
     type CodeAction,
 } from "../../services/aiService";
@@ -39,7 +46,11 @@ type AIChatProps = {
         endLine: number;
     } | null;
     terminalContext?: TerminalAIContext | null;
+    hasUnsavedChanges?: boolean;
     onApplyPatch?: (action: CodeAction) => Promise<void>;
+    onAgentChangesApplied?: (
+        changes: { path: string; content: string; file_id: number }[],
+    ) => void;
 
     onApplyCode?: (
         code: string,
@@ -587,7 +598,9 @@ function AIChat({
     language,
     selectedCode,
     terminalContext,
+    hasUnsavedChanges = false,
     onApplyPatch,
+    onAgentChangesApplied,
     onApplyCode,
     onUndoCode,
     canUndo = false,
@@ -644,6 +657,9 @@ function AIChat({
 
     const [isApplyingPatch, setIsApplyingPatch] =
         useState(false);
+    const [mode, setMode] = useState<"ask" | "plan" | "edit" | "agent">("ask");
+    const [agentTask, setAgentTask] = useState<AgentTask | null>(null);
+    const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
 
     const inputRef =
         useRef<HTMLTextAreaElement | null>(
@@ -710,6 +726,21 @@ function AIChat({
         }
     }, [isLoading]);
 
+    useEffect(() => {
+        if (
+            !agentTask ||
+            !["pending", "planning", "executing", "validating"].includes(agentTask.status)
+        ) {
+            return;
+        }
+        const timer = window.setInterval(() => {
+            void getAgentTask(agentTask.id)
+                .then(setAgentTask)
+                .catch((error) => console.error("Unable to refresh agent task:", error));
+        }, 1200);
+        return () => window.clearInterval(timer);
+    }, [agentTask?.id, agentTask?.status]);
+
     /* =====================================================
        ADD MESSAGE
        ===================================================== */
@@ -763,6 +794,14 @@ function AIChat({
         setPreviewAction("general");
     };
 
+    const handlePreviewAgentAction = (action: CodeAction, index: number) => {
+        setPreviewAgentActionIndex(index);
+        setPreviewPatch(action);
+        setPreviewCode(action.new_code);
+        setPreviewMessageId(null);
+        setPreviewAction("general");
+    };
+
     /* =====================================================
        CLOSE PREVIEW
        ===================================================== */
@@ -772,6 +811,7 @@ function AIChat({
         setPreviewPatch(null);
         setPreviewMessageId(null);
         setPreviewAction("general");
+        setPreviewAgentActionIndex(null);
     };
 
     /* =====================================================
@@ -785,7 +825,30 @@ function AIChat({
             return;
         }
 
+        if (previewAgentActionIndex !== null && hasUnsavedChanges) {
+            addMessage("assistant", "Save or discard your open editor changes before applying agent changes.");
+            return;
+        }
+
         if (previewPatch) {
+            if (previewAgentActionIndex !== null && agentTask) {
+                setIsApplyingPatch(true);
+                try {
+                    const updated = await approveAgentChanges(agentTask.id, {
+                        action_indexes: [previewAgentActionIndex],
+                    });
+                    setAgentTask(updated);
+                    if (updated.changes?.length) {
+                        onAgentChangesApplied?.(updated.changes);
+                    }
+                    closePreview();
+                } catch (error) {
+                    addMessage("assistant", `Agent change was rejected: ${error instanceof Error ? error.message : "Request failed."}`);
+                } finally {
+                    setIsApplyingPatch(false);
+                }
+                return;
+            }
             if (!onApplyPatch || isApplyingPatch) {
                 return;
             }
@@ -831,6 +894,13 @@ function AIChat({
        ===================================================== */
 
     const handleRejectPreview = () => {
+        if (previewAgentActionIndex !== null && agentTask) {
+            void approveAgentChanges(agentTask.id, {
+                reject_indexes: [previewAgentActionIndex],
+            }).then(setAgentTask).catch((error) => {
+                addMessage("assistant", `Unable to reject change: ${error instanceof Error ? error.message : "Request failed."}`);
+            });
+        }
         closePreview();
     };
 
@@ -870,6 +940,40 @@ function AIChat({
         setIsLoading(true);
 
         try {
+            if (mode === "agent") {
+                if (!projectId) {
+                    throw new Error("Open a project before starting an agent task.");
+                }
+                if (agentTask && ["pending", "planning", "awaiting_approval", "executing", "validating"].includes(agentTask.status)) {
+                    throw new Error("Finish or stop the active agent task before starting another.");
+                }
+                const task = await createAgentTask(projectId, message, {
+                    current_file_path: filePath,
+                    context: context && filePath
+                        ? `CURRENT FILE: ${filePath}\nLANGUAGE: ${language ?? ""}\n\n${context}`.slice(0, 20000)
+                        : context?.slice(0, 20000),
+                    selected_code: selectedCode
+                        ? {
+                            file_path: selectedCode.filePath,
+                            language: selectedCode.language,
+                            code: selectedCode.code.slice(0, 20000),
+                            start_line: selectedCode.startLine,
+                            end_line: selectedCode.endLine,
+                        }
+                        : null,
+                    terminal_context: terminalContext
+                        ? {
+                            ...terminalContext,
+                            command: terminalContext.command.slice(0, 2000),
+                            stdout: terminalContext.stdout.slice(0, 12000),
+                            stderr: terminalContext.stderr.slice(0, 12000),
+                        }
+                        : null,
+                });
+                setAgentTask(task);
+                addMessage("assistant", "Agent task started. It will prepare a plan and proposed changes for review.");
+                return;
+            }
             /*
              * Convert existing chat messages
              * into the format expected by
@@ -892,6 +996,7 @@ function AIChat({
             const response =
                 await sendAIChat({
                     message,
+                    mode,
                     history,
                     context: context && filePath
                         ? `CURRENT FILE: ${filePath}\nLANGUAGE: ${language ?? ""}\n\n${context}`
@@ -920,10 +1025,15 @@ function AIChat({
              * Extract the first Markdown
              * code block from the response.
              */
-            const generatedCode =
-                response.code_action?.operation === "replace"
+            const generatedCode = mode === "plan"
+                ? null
+                : response.code_action?.operation === "replace"
                     ? response.code_action.new_code
                     : extractCodeBlock(response.message);
+
+            const responseContent = response.plan?.length
+                ? `Plan:\n${response.plan.map((step, index) => `${index + 1}. ${step}`).join("\n")}`
+                : response.message;
 
             const messageId =
                 Date.now() +
@@ -941,7 +1051,7 @@ function AIChat({
                         role:
                             "assistant",
                         content:
-                            response.message,
+                            responseContent,
                         code:
                             generatedCode ??
                             undefined,
@@ -1073,6 +1183,20 @@ function AIChat({
                             </span>
                         )}
                     </div>
+                </div>
+
+                <div className="ai-chat__mode-switch" role="group" aria-label="Assistant mode">
+                    {(["ask", "plan", "edit", "agent"] as const).map((item) => (
+                        <button
+                            key={item}
+                            type="button"
+                            className={`ai-chat__mode-button${mode === item ? " is-active" : ""}`}
+                            onClick={() => setMode(item)}
+                            aria-pressed={mode === item}
+                        >
+                            {item[0].toUpperCase() + item.slice(1)}
+                        </button>
+                    ))}
                 </div>
 
                 {/* Explain */}
@@ -1254,6 +1378,135 @@ function AIChat({
                     }
                 />
             </div>
+
+            {agentTask && (
+                <section className="ai-chat__agent-panel" aria-live="polite">
+                    <div className="ai-chat__agent-heading">
+                        <div>
+                            <strong>Agent activity</strong>
+                            <span>{agentTask.status.replaceAll("_", " ")}</span>
+                        </div>
+                        {!(["completed", "failed", "cancelled"].includes(agentTask.status)) && (
+                            <button
+                                type="button"
+                                className="ai-chat__agent-stop"
+                                onClick={() => void cancelAgentTask(agentTask.id).then(setAgentTask)}
+                            >
+                                Stop
+                            </button>
+                        )}
+                    </div>
+                    <p className="ai-chat__agent-task">{agentTask.task}</p>
+                    {agentTask.steps.length > 0 && (
+                        <ol className="ai-chat__agent-steps">
+                            {agentTask.steps.slice(-8).map((step) => (
+                                <li key={step.sequence} className={`is-${step.status}`}>
+                                    <span>{step.description}</span>
+                                </li>
+                            ))}
+                        </ol>
+                    )}
+                    {agentTask.plan.length > 0 && (
+                        <ol className="ai-chat__agent-plan">
+                            {agentTask.plan.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
+                        </ol>
+                    )}
+                    {agentTask.actions.length > 0 && (
+                        <div className="ai-chat__agent-changes">
+                            <div className="ai-chat__agent-section-title">
+                                Proposed files <span>{agentTask.actions.length}</span>
+                            </div>
+                            {agentTask.actions.map((item, index) => (
+                                <div className="ai-chat__agent-change" key={`${item.action.file_path}-${index}`}>
+                                    <div className="ai-chat__agent-file">
+                                        <strong title={item.action.file_path}>{item.action.file_path}</strong>
+                                        <span>{item.status.replaceAll("_", " ")}</span>
+                                    </div>
+                                    <div className="ai-chat__agent-actions">
+                                        <button
+                                            type="button"
+                                            onClick={() => handlePreviewAgentAction(item.action, index)}
+                                        >
+                                            Review
+                                        </button>
+                                        {item.status === "awaiting_approval" && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    disabled={hasUnsavedChanges}
+                                                    title={hasUnsavedChanges ? "Save or discard editor changes first" : "Approve this file"}
+                                                    onClick={() => void approveAgentChanges(agentTask.id, { action_indexes: [index] }).then((updated) => {
+                                                        setAgentTask(updated);
+                                                        if (updated.changes?.length) onAgentChangesApplied?.(updated.changes);
+                                                    })}
+                                                >
+                                                    Accept
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void approveAgentChanges(agentTask.id, { reject_indexes: [index] }).then(setAgentTask)}
+                                                >
+                                                    Reject
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                    {item.error && <p className="ai-chat__agent-error">{item.error}</p>}
+                                </div>
+                            ))}
+                            {agentTask.actions.some((item) => item.status === "awaiting_approval") && (
+                                <div className="ai-chat__agent-bulk-actions">
+                                    <button
+                                        type="button"
+                                        disabled={hasUnsavedChanges}
+                                        onClick={() => void approveAgentChanges(agentTask.id, { accept_all: true }).then((updated) => {
+                                            setAgentTask(updated);
+                                            if (updated.changes?.length) onAgentChangesApplied?.(updated.changes);
+                                        })}
+                                    >Accept all changes</button>
+                                    <button
+                                        type="button"
+                                        onClick={() => void approveAgentChanges(agentTask.id, { reject_all: true }).then(setAgentTask)}
+                                    >Reject all</button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {hasUnsavedChanges && agentTask.actions.some((item) => item.status === "awaiting_approval") && (
+                        <p className="ai-chat__agent-note">Save or discard open editor changes before applying.</p>
+                    )}
+                    {agentTask.validation_command && agentTask.actions.every((item) => item.status !== "awaiting_approval") && (
+                        <div className="ai-chat__agent-validation">
+                            <span>Validation command</span>
+                            <code>{agentTask.validation_command}</code>
+                            {agentTask.status === "awaiting_approval" && (
+                                <div className="ai-chat__agent-actions">
+                                    <button type="button" onClick={() => void approveAgentValidation(agentTask.id, agentTask.validation_command!, true).then(setAgentTask)}>
+                                        Run validation
+                                    </button>
+                                    <button type="button" onClick={() => void approveAgentValidation(agentTask.id, agentTask.validation_command!, false).then(setAgentTask)}>
+                                        Skip
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {agentTask.validation_result && (
+                        <div className={`ai-chat__agent-result${agentTask.validation_result.success ? " is-pass" : " is-fail"}`}>
+                            {agentTask.validation_result.success ? "Validation passed" : `Validation failed (exit ${agentTask.validation_result.exit_code})`}
+                            {(agentTask.validation_result.stderr || agentTask.validation_result.stdout) && (
+                                <pre>{(agentTask.validation_result.stderr || agentTask.validation_result.stdout).slice(0, 3000)}</pre>
+                            )}
+                        </div>
+                    )}
+                    {agentTask.status === "failed" && agentTask.iteration < 5 && (
+                        <button type="button" className="ai-chat__agent-continue" onClick={() => void continueAgentTask(agentTask.id).then(setAgentTask)}>
+                            Propose a correction
+                        </button>
+                    )}
+                    {agentTask.stop_reason && <p className="ai-chat__agent-note">{agentTask.stop_reason}</p>}
+                </section>
+            )}
 
             {/* =================================================
                 CODE DIFF PREVIEW
@@ -1482,7 +1735,13 @@ function AIChat({
                         placeholder={
                             isLoading
                                 ? "AI is thinking..."
-                                : "Ask AI about your code..."
+                                : mode === "agent"
+                                    ? "Describe a coding task for the agent..."
+                                    : mode === "plan"
+                                        ? "Describe a task to plan..."
+                                        : mode === "edit"
+                                            ? "Describe the change to propose..."
+                                            : "Ask AI about your code..."
                         }
                         rows={1}
                         disabled={
@@ -1509,14 +1768,11 @@ function AIChat({
                 </div>
 
                 <div className="ai-chat__hint">
-                    <span>
-                        Enter
-                    </span>{" "}
-                    to send ·{" "}
-                    <span>
-                        Shift + Enter
-                    </span>{" "}
-                    for new line
+                    {mode === "agent"
+                        ? hasUnsavedChanges
+                            ? "Save or discard open editor changes before agent approval"
+                            : "Agent changes and validation require your approval"
+                        : <><span>Enter</span> to send · <span>Shift + Enter</span> for new line</>}
                 </div>
             </div>
         </section>
