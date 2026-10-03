@@ -11,6 +11,7 @@ import Terminal
     from "../components/terminal/Terminal";
 
 import {
+    getProjectFileTree,
     getProjectFiles,
     createProjectFile,
     updateProjectFile,
@@ -745,23 +746,62 @@ export default function IDEPage() {
     // =========================================
 
     async function handleApplyPatch(action: CodeAction) {
-        if (activeTabId === null) {
-            throw new Error("Open a file before applying a patch.");
+        const openTarget = tabs.find(
+            (tab) => tab.file.path === action.file_path || tab.file.name === action.file_path,
+        );
+        let targetFile = openTarget?.file;
+
+        if (!targetFile) {
+            const pending = [...await getProjectFileTree(numericProjectId)];
+            const projectFiles: FileTreeNode[] = [];
+            while (pending.length > 0) {
+                const file = pending.pop();
+                if (!file) {
+                    continue;
+                }
+                if (file.type === "file") {
+                    projectFiles.push(file);
+                }
+                pending.push(...(file.children ?? []));
+            }
+
+            targetFile = projectFiles.find((file) => file.path === action.file_path);
+            if (!targetFile && !action.file_path.includes("/")) {
+                const matchingNames = projectFiles.filter((file) => file.name === action.file_path);
+                if (matchingNames.length === 1) {
+                    targetFile = matchingNames[0];
+                }
+            }
+        }
+
+        if (!targetFile) {
+            throw new Error(`Could not find the proposed file: ${action.file_path}`);
+        }
+
+        const targetTab = tabs.find((tab) => tab.file.id === targetFile.id);
+        if (targetTab?.isDirty) {
+            throw new Error("Save or discard changes in the proposed file before applying this patch.");
         }
 
         const updatedFile = await applyProjectFileCodeAction(
             numericProjectId,
-            activeTabId,
+            targetFile.id,
             action,
         );
 
-        setTabs((currentTabs) =>
-            currentTabs.map((tab) =>
-                tab.file.id === activeTabId
-                    ? { ...tab, content: updatedFile.content ?? "", isDirty: false }
-                    : tab,
-            ),
-        );
+        setTabs((currentTabs) => {
+            const existingTab = currentTabs.find((tab) => tab.file.id === targetFile.id);
+            const updatedTab: EditorTab = {
+                file: targetFile,
+                content: updatedFile.content ?? "",
+                language: existingTab?.language ?? getLanguageFromFileName(targetFile.name),
+                isDirty: false,
+            };
+            return existingTab
+                ? currentTabs.map((tab) => tab.file.id === targetFile.id ? updatedTab : tab)
+                : [...currentTabs, updatedTab];
+        });
+        setActiveTabId(targetFile.id);
         setSaveError("");
         setRefreshKey((current) => current + 1);
     }

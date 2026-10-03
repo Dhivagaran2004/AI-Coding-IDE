@@ -169,6 +169,40 @@ def test_builder_creates_repository_structure():
     assert "main.py" in result.content
 
 
+def test_build_tree_includes_empty_files_without_exposing_contents():
+    files = [
+        make_file(
+            file_id=1,
+            name="src",
+            file_type="folder",
+        ),
+        make_file(
+            file_id=2,
+            name="new_module.py",
+            content="",
+            parent_id=1,
+        ),
+        make_file(
+            file_id=3,
+            name=".env",
+            content="SECRET_KEY=hidden",
+        ),
+    ]
+
+    builder = RepositoryContextBuilder(
+        db=FakeDatabase(files),
+        project_id=1,
+    )
+
+    tree = builder.build_tree()
+
+    assert "src/" in tree
+    assert "new_module.py" in tree
+    assert ".env" not in tree
+    assert "SECRET_KEY" not in tree
+    assert "PROJECT FILE CONTENT" not in tree
+
+
 # ============================================================
 # TEST 4
 # ============================================================

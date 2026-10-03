@@ -124,6 +124,16 @@ class RepositoryContextBuilder:
             character_count=len(context),
         )
 
+    def build_tree(self) -> str:
+        """Build only the safe project structure, without file contents."""
+
+        return self._limit_context(
+            self._build_repository_tree(
+                self._load_project_files(),
+                include_empty_files=True,
+            )
+        )
+
     # =========================================================
     # LOAD PROJECT FILES
     # =========================================================
@@ -326,6 +336,7 @@ class RepositoryContextBuilder:
     def _build_repository_tree(
         self,
         files: list[ProjectFile],
+        include_empty_files: bool = False,
     ) -> str:
         """
         Build a safe repository tree.
@@ -382,8 +393,13 @@ class RepositoryContextBuilder:
             # FILE
             # -------------------------------------------------
 
-            if self._should_include_file(
-                project_file
+            if (
+                lower_name not in ignored_names
+                and not any(
+                    lower_name.endswith(extension)
+                    for extension in self.IGNORED_EXTENSIONS
+                )
+                and (include_empty_files or project_file.content)
             ):
                 visible_files.append(
                     project_file

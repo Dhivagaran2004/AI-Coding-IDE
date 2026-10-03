@@ -95,30 +95,44 @@ class CodeActionService:
         lines = (
             cast(str | None, project_file.content) or ""
         ).splitlines(keepends=True)
+        empty_file = not lines
         start_line = action.start_line
         end_line = action.end_line
         if (
             start_line is None
             or end_line is None
-            or end_line > len(lines)
+            or (
+                empty_file
+                and (start_line, end_line, action.old_code) != (1, 1, "")
+            )
+            or (not empty_file and end_line > len(lines))
         ):
             raise PatchValidationError("Patch line range is outside the file.")
 
-        current_code = "".join(lines[start_line - 1:end_line])
+        current_code = "" if empty_file else "".join(lines[start_line - 1:end_line])
         normalized_current = self._normalize_line_endings(current_code)
         normalized_expected = self._normalize_line_endings(action.old_code)
-        if (
-            normalized_current != normalized_expected
-            and normalized_current.removesuffix("\n")
-            != normalized_expected.removesuffix("\n")
-            and not self._matches_ignoring_indentation(
-                normalized_current,
-                normalized_expected,
-            )
-        ):
-            raise StalePatchError(
-                "The file changed since this patch was generated."
-            )
+        if not self._matches_patch_text(normalized_current, normalized_expected):
+            expected_lines = normalized_expected.splitlines(keepends=True)
+            matches = [
+                index
+                for index in range(len(lines) - len(expected_lines) + 1)
+                if expected_lines
+                and self._matches_patch_text(
+                    self._normalize_line_endings(
+                        "".join(lines[index:index + len(expected_lines)])
+                    ),
+                    normalized_expected,
+                )
+            ]
+            if len(matches) != 1:
+                raise StalePatchError(
+                    "The file changed since this patch was generated."
+                )
+            start_line = matches[0] + 1
+            end_line = matches[0] + len(expected_lines)
+            current_code = "".join(lines[matches[0]:matches[0] + len(expected_lines)])
+            normalized_current = self._normalize_line_endings(current_code)
 
         normalized_replacement = self._normalize_line_endings(
             action.new_code
@@ -142,7 +156,7 @@ class CodeActionService:
             ("\n", "\r")
         ):
             replacement += newline
-        elif not current_code.endswith(("\n", "\r")) and replacement.endswith(
+        elif not empty_file and not current_code.endswith(("\n", "\r")) and replacement.endswith(
             newline
         ):
             replacement = replacement[:-len(newline)]
@@ -168,6 +182,14 @@ class CodeActionService:
     @staticmethod
     def _normalize_line_endings(value: str) -> str:
         return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    @classmethod
+    def _matches_patch_text(cls, current: str, expected: str) -> bool:
+        return (
+            current == expected
+            or current.removesuffix("\n") == expected.removesuffix("\n")
+            or cls._matches_ignoring_indentation(current, expected)
+        )
 
     @staticmethod
     def _matches_ignoring_indentation(

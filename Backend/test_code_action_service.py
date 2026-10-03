@@ -196,6 +196,37 @@ def test_stale_patch_is_rejected_without_overwriting(patch_db):
     assert file.content.endswith("return 9\n")
 
 
+def test_patch_finds_unique_old_code_when_line_number_has_shifted(patch_db):
+    file = patch_db.get(ProjectFile, 11)
+    file.content = "# inserted before proposal\n" + file.content
+    patch_db.commit()
+    service, _ = make_service(patch_db)
+
+    updated = service.apply_action(
+        1,
+        11,
+        1,
+        make_action(start_line=1, end_line=1),
+    )
+
+    assert updated.content == "# inserted before proposal\ndef calculate():\n    return 2\n"
+
+
+def test_patch_rejects_ambiguous_old_code_when_line_number_has_shifted(patch_db):
+    file = patch_db.get(ProjectFile, 11)
+    file.content = "def calculate():\n    return 1\n\ndef other():\n    return 1\n"
+    patch_db.commit()
+    service, _ = make_service(patch_db)
+
+    with pytest.raises(StalePatchError):
+        service.apply_action(
+            1,
+            11,
+            1,
+            make_action(start_line=1, end_line=1),
+        )
+
+
 def test_invalid_line_range_is_rejected(patch_db):
     service, _ = make_service(patch_db)
 

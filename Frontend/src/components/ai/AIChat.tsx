@@ -5,26 +5,25 @@ import {
     useState,
 } from "react";
 import axios from "axios";
-
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+    Check,
+} from "lucide-react";
 import "./AIChat.css";
-
 import {
     approveAgentChanges,
     approveAgentValidation,
     cancelAgentTask,
     continueAgentTask,
     createAgentTask,
-    getAgentTask,
     sendAIChat,
+    getAgentTask,
     type AgentTask,
     type AIMessage,
     type CodeAction,
 } from "../../services/aiService";
 import type { TerminalAIContext } from "../../services/terminalService";
-
-/* =========================================================
-   TYPES
-   ========================================================= */
 
 type AIHistoryItem = {
     id: string;
@@ -51,7 +50,6 @@ type AIChatProps = {
     onAgentChangesApplied?: (
         changes: { path: string; content: string; file_id: number }[],
     ) => void;
-
     onApplyCode?: (
         code: string,
         description?: string,
@@ -104,7 +102,7 @@ type DiffStats = {
    CODE BLOCK EXTRACTION
    ========================================================= */
 
-   function extractCodeBlock(
+function extractCodeBlock(
     content: string,
     fileName?: string | null,
 ): string | null {
@@ -658,6 +656,9 @@ function AIChat({
     const [isApplyingPatch, setIsApplyingPatch] =
         useState(false);
     const [mode, setMode] = useState<"ask" | "plan" | "edit" | "agent">("ask");
+    const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
+    const modePickerRef = useRef<HTMLDivElement | null>(null);
+    const modePickerButtonRef = useRef<HTMLButtonElement | null>(null);
     const [agentTask, setAgentTask] = useState<AgentTask | null>(null);
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
 
@@ -725,6 +726,31 @@ function AIChat({
             inputRef.current?.focus();
         }
     }, [isLoading]);
+
+    useEffect(() => {
+        if (!isModeMenuOpen) {
+            return;
+        }
+
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (!modePickerRef.current?.contains(event.target as Node)) {
+                setIsModeMenuOpen(false);
+            }
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setIsModeMenuOpen(false);
+                modePickerButtonRef.current?.focus();
+            }
+        };
+
+        document.addEventListener("pointerdown", closeOnOutsidePointer);
+        document.addEventListener("keydown", closeOnEscape);
+        return () => {
+            document.removeEventListener("pointerdown", closeOnOutsidePointer);
+            document.removeEventListener("keydown", closeOnEscape);
+        };
+    }, [isModeMenuOpen]);
 
     useEffect(() => {
         if (
@@ -1151,52 +1177,21 @@ function AIChat({
                         AI
                     </div>
 
-                    <div>
-                        <h2 className="ai-chat__title">
-                            AI Assistant
-                        </h2>
+                    <div className="ai-chat__title-stack">
+                        <div className="ai-chat__title-row">
+                            <h2 className="ai-chat__title">
+                                AI Assistant
+                            </h2>
 
-                        <span className="ai-chat__status">
-                            <span className="ai-chat__status-dot" />
+                            <span className="ai-chat__status">
+                                <span className="ai-chat__status-dot" />
 
-                            {isLoading
-                                ? "Thinking..."
-                                : "Ready"}
-                        </span>
-
-                        {fileName && (
-                            <span className="ai-chat__context">
-                                File: {fileName}
+                                {isLoading
+                                    ? "Thinking..."
+                                    : "Ready"}
                             </span>
-                        )}
-                        {selectedCode?.code.trim() && (
-                            <span
-                                className="ai-chat__context"
-                                title={`${selectedCode.filePath}:${selectedCode.startLine}-${selectedCode.endLine}`}
-                            >
-                                Selection: lines {selectedCode.startLine}-{selectedCode.endLine}
-                            </span>
-                        )}
-                        {terminalContext && (
-                            <span className="ai-chat__context">
-                                Terminal: exit {terminalContext.exit_code}
-                            </span>
-                        )}
+                        </div>
                     </div>
-                </div>
-
-                <div className="ai-chat__mode-switch" role="group" aria-label="Assistant mode">
-                    {(["ask", "plan", "edit", "agent"] as const).map((item) => (
-                        <button
-                            key={item}
-                            type="button"
-                            className={`ai-chat__mode-button${mode === item ? " is-active" : ""}`}
-                            onClick={() => setMode(item)}
-                            aria-pressed={mode === item}
-                        >
-                            {item[0].toUpperCase() + item.slice(1)}
-                        </button>
-                    ))}
                 </div>
 
                 {/* Explain */}
@@ -1316,7 +1311,15 @@ function AIChat({
                                     className={`ai-chat__bubble ai-chat__bubble--${message.role}`}
                                 >
                                     <div className="ai-chat__message-content">
-                                        {message.content}
+                                        {message.role === "assistant" ? (
+                                            <ReactMarkdown
+                                                remarkPlugins={[remarkGfm]}
+                                            >
+                                                {message.content}
+                                            </ReactMarkdown>
+                                        ) : (
+                                            message.content
+                                        )}
                                     </div>
 
                                     {message.role ===
@@ -1372,21 +1375,16 @@ function AIChat({
                     </div>
                 )}
 
-                <div
-                    ref={
-                        messagesEndRef
-                    }
-                />
-            </div>
-
             {agentTask && (
-                <section className="ai-chat__agent-panel" aria-live="polite">
+                <section className="ai-chat__agent-panel ai-chat__bubble ai-chat__bubble--assistant" aria-live="polite">
                     <div className="ai-chat__agent-heading">
                         <div>
                             <strong>Agent activity</strong>
-                            <span>{agentTask.status.replaceAll("_", " ")}</span>
+                            <span className={`ai-chat__agent-status is-${agentTask.status}`}>
+                                {agentTask.status.replaceAll("_", " ")}
+                            </span>
                         </div>
-                        {!(["completed", "failed", "cancelled"].includes(agentTask.status)) && (
+                        {!( ["completed", "failed", "cancelled"].includes(agentTask.status)) && (
                             <button
                                 type="button"
                                 className="ai-chat__agent-stop"
@@ -1411,6 +1409,11 @@ function AIChat({
                             {agentTask.plan.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
                         </ol>
                     )}
+                    {agentTask.status === "completed" && agentTask.actions.length === 0 && !agentTask.validation_command && (
+                        <p className="ai-chat__agent-empty">
+                            Planning finished without proposing file changes. Add a target file or more implementation detail to your task.
+                        </p>
+                    )}
                     {agentTask.actions.length > 0 && (
                         <div className="ai-chat__agent-changes">
                             <div className="ai-chat__agent-section-title">
@@ -1420,7 +1423,9 @@ function AIChat({
                                 <div className="ai-chat__agent-change" key={`${item.action.file_path}-${index}`}>
                                     <div className="ai-chat__agent-file">
                                         <strong title={item.action.file_path}>{item.action.file_path}</strong>
-                                        <span>{item.status.replaceAll("_", " ")}</span>
+                                        <span className={`ai-chat__agent-file-status is-${item.status}`}>
+                                            {item.status.replaceAll("_", " ")}
+                                        </span>
                                     </div>
                                     <div className="ai-chat__agent-actions">
                                         <button
@@ -1429,7 +1434,7 @@ function AIChat({
                                         >
                                             Review
                                         </button>
-                                        {item.status === "awaiting_approval" && (
+                                        {agentTask.status === "awaiting_approval" && item.status === "awaiting_approval" && (
                                             <>
                                                 <button
                                                     type="button"
@@ -1440,10 +1445,12 @@ function AIChat({
                                                         if (updated.changes?.length) onAgentChangesApplied?.(updated.changes);
                                                     })}
                                                 >
+                                                    <Check size={12} />
                                                     Accept
                                                 </button>
                                                 <button
                                                     type="button"
+                                                    className="is-secondary"
                                                     onClick={() => void approveAgentChanges(agentTask.id, { reject_indexes: [index] }).then(setAgentTask)}
                                                 >
                                                     Reject
@@ -1454,9 +1461,10 @@ function AIChat({
                                     {item.error && <p className="ai-chat__agent-error">{item.error}</p>}
                                 </div>
                             ))}
-                            {agentTask.actions.some((item) => item.status === "awaiting_approval") && (
+                            {agentTask.status === "awaiting_approval" && agentTask.actions.some((item) => item.status === "awaiting_approval") && (
                                 <div className="ai-chat__agent-bulk-actions">
                                     <button
+                                        className="is-primary"
                                         type="button"
                                         disabled={hasUnsavedChanges}
                                         onClick={() => void approveAgentChanges(agentTask.id, { accept_all: true }).then((updated) => {
@@ -1477,7 +1485,7 @@ function AIChat({
                     )}
                     {agentTask.validation_command && agentTask.actions.every((item) => item.status !== "awaiting_approval") && (
                         <div className="ai-chat__agent-validation">
-                            <span>Validation command</span>
+                            <span className="ai-chat__agent-validation-label">Validation</span>
                             <code>{agentTask.validation_command}</code>
                             {agentTask.status === "awaiting_approval" && (
                                 <div className="ai-chat__agent-actions">
@@ -1493,7 +1501,7 @@ function AIChat({
                     )}
                     {agentTask.validation_result && (
                         <div className={`ai-chat__agent-result${agentTask.validation_result.success ? " is-pass" : " is-fail"}`}>
-                            {agentTask.validation_result.success ? "Validation passed" : `Validation failed (exit ${agentTask.validation_result.exit_code})`}
+                            <strong>{agentTask.validation_result.success ? "Validation passed" : `Validation failed (exit ${agentTask.validation_result.exit_code})`}</strong>
                             {(agentTask.validation_result.stderr || agentTask.validation_result.stdout) && (
                                 <pre>{(agentTask.validation_result.stderr || agentTask.validation_result.stdout).slice(0, 3000)}</pre>
                             )}
@@ -1507,6 +1515,13 @@ function AIChat({
                     {agentTask.stop_reason && <p className="ai-chat__agent-note">{agentTask.stop_reason}</p>}
                 </section>
             )}
+
+            <div
+                ref={
+                    messagesEndRef
+                }
+            />
+            </div>
 
             {/* =================================================
                 CODE DIFF PREVIEW
@@ -1714,6 +1729,27 @@ function AIChat({
                 ================================================= */}
 
             <div className="ai-chat__input-area">
+                <div className="ai-chat__meta-row ai-chat__meta-row--composer">
+                    {fileName && (
+                        <span className="ai-chat__context">
+                            File: {fileName}
+                        </span>
+                    )}
+                    {selectedCode?.code.trim() && (
+                        <span
+                            className="ai-chat__context"
+                            title={`${selectedCode.filePath}:${selectedCode.startLine}-${selectedCode.endLine}`}
+                        >
+                            Selection: lines {selectedCode.startLine}-{selectedCode.endLine}
+                        </span>
+                    )}
+                    {terminalContext && (
+                        <span className="ai-chat__context">
+                            Terminal: exit {terminalContext.exit_code}
+                        </span>
+                    )}
+                </div>
+
                 <div className="ai-chat__input-wrapper">
                     <textarea
                         ref={
@@ -1767,12 +1803,49 @@ function AIChat({
                     </button>
                 </div>
 
-                <div className="ai-chat__hint">
-                    {mode === "agent"
-                        ? hasUnsavedChanges
-                            ? "Save or discard open editor changes before agent approval"
-                            : "Agent changes and validation require your approval"
-                        : <><span>Enter</span> to send · <span>Shift + Enter</span> for new line</>}
+                <div className="ai-chat__composer-footer">
+                    <div className="ai-chat__mode-picker" ref={modePickerRef}>
+                        <button
+                            ref={modePickerButtonRef}
+                            type="button"
+                            className="ai-chat__mode-trigger"
+                            onClick={() => setIsModeMenuOpen((open) => !open)}
+                            aria-label={`Chat mode: ${mode}`}
+                            aria-haspopup="true"
+                            aria-expanded={isModeMenuOpen}
+                        >
+                            <span>{mode[0].toUpperCase() + mode.slice(1)}</span>
+                            <span className="ai-chat__mode-chevron" aria-hidden="true" />
+                        </button>
+                        {isModeMenuOpen && (
+                            <div className="ai-chat__mode-menu" role="group" aria-label="Assistant mode">
+                                {(["agent", "ask", "plan", "edit"] as const).map((item) => (
+                                    <button
+                                        key={item}
+                                        type="button"
+                                        className="ai-chat__mode-option"
+                                        onClick={() => {
+                                            setMode(item);
+                                            setIsModeMenuOpen(false);
+                                            modePickerButtonRef.current?.focus();
+                                        }}
+                                        aria-pressed={mode === item}
+                                    >
+                                        <span>{item[0].toUpperCase() + item.slice(1)}</span>
+                                        {mode === item && <span aria-hidden="true">✓</span>}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="ai-chat__hint">
+                        {mode === "agent"
+                            ? hasUnsavedChanges
+                                ? "Save or discard open editor changes before agent approval"
+                                : "Agent changes and validation require your approval"
+                            : <><span>Enter</span> to send · <span>Shift + Enter</span> for new line</>}
+                    </div>
                 </div>
             </div>
         </section>

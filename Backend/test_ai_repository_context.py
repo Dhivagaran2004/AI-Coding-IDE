@@ -201,6 +201,45 @@ def test_project_id_adds_repository_context(monkeypatch):
         ai_router.ai_service = original_service
 
 
+def test_project_tree_is_added_for_file_inventory_questions():
+    fake_service = FakeAIService()
+    fake_files = [
+        FakeFile(
+            file_id=1,
+            name="src",
+            content="",
+            file_type="folder",
+        ),
+        FakeFile(
+            file_id=2,
+            name="main.py",
+            content="print('hello')",
+            parent_id=1,
+        ),
+    ]
+    app, original_service = create_test_app(
+        fake_service,
+        fake_files,
+    )
+
+    try:
+        response = TestClient(app).post(
+            "/ai/chat",
+            json={
+                "message": "List the files available in this project.",
+                "project_id": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        assert fake_service.last_context is not None
+        assert "PROJECT STRUCTURE" in fake_service.last_context
+        assert "src/" in fake_service.last_context
+        assert "main.py" in fake_service.last_context
+    finally:
+        ai_router.ai_service = original_service
+
+
 def test_project_id_rejects_project_not_owned_by_user():
     fake_service = FakeAIService()
     app, original_service = create_test_app(

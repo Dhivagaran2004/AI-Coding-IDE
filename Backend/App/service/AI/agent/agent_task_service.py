@@ -196,11 +196,30 @@ class TaskPlanner:
             "10 CodeAction objects using type=code_change and operation=replace), "
             "and validation_command (a string or null). Each action must use "
             "exact file_path, start_line, end_line, old_code, new_code, and "
-            "description. Propose commands only from pytest, python -m pytest, "
+            "description. Include old_code and copy it exactly from the "
+            "inspected file, including whitespace and line breaks. Use an "
+            "empty old_code only when replacing an actually empty file at line "
+            "1. If exact source text is unavailable, return no actions. "
+            "Propose commands only from pytest, python -m pytest, "
             "npm test, npm run build, npm run lint, git status, git diff. "
             "If there is insufficient context, return no actions and explain "
             "what must be inspected in the plan.\n\n"
             f"TASK:\n{task}"
+        )
+
+    @staticmethod
+    def repair_prompt(task: str, response: str, error: str) -> str:
+        return (
+            "Your previous plan was invalid. Return a corrected single JSON "
+            "object with the same required keys and constraints. Fix the "
+            "validation issue without weakening the requirements. For replace "
+            "actions, old_code must be included and copied exactly from the "
+            "provided project context. Use an empty string only for an actually "
+            "empty file at line 1. If exact source text is unavailable, return "
+            "no actions and explain why in the plan.\n\n"
+            f"VALIDATION ERROR:\n{error[:1000]}\n\n"
+            f"TASK:\n{task}\n\n"
+            f"INVALID RESPONSE:\n{response[:MAX_AGENT_OUTPUT_CHARS]}"
         )
 
     @staticmethod

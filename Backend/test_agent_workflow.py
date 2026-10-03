@@ -1,4 +1,5 @@
 from datetime import datetime
+import asyncio
 import json
 
 import pytest
@@ -98,8 +99,10 @@ def action_payload() -> dict[str, object]:
 class FakeAIService:
     def __init__(self, response: str):
         self.responses = response if isinstance(response, list) else [response]
+        self.loop_ids = []
 
     async def chat(self, message, context=None, history=None):
+        self.loop_ids.append(id(asyncio.get_running_loop()))
         if len(self.responses) > 1:
             return self.responses.pop(0)
         return self.responses[0]
@@ -214,6 +217,71 @@ def test_agent_task_requires_approval_before_applying_changes(agent_db, monkeypa
     assert file.content.endswith("return 2\n")
 
 
+def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeypatch):
+    invalid_action = action_payload()
+    invalid_action.pop("old_code")
+    invalid_response = json.dumps({
+        "plan": ["Update the return value"],
+        "actions": [invalid_action],
+        "validation_command": None,
+    })
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService([invalid_response, make_plan_response()]),
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "awaiting_approval"
+    assert task["actions"][0]["action"]["old_code"] == "    return 1\n"
+    assert any(step["description"] == "Repairing invalid implementation plan" for step in task["steps"])
+    assert len(set(agent_router.ai_service.loop_ids)) == 1
+
+
+def test_agent_can_fill_an_empty_existing_file(agent_db, monkeypatch):
+    file = agent_db.get(ProjectFile, 11)
+    file.content = ""
+    agent_db.commit()
+    new_content = "<!DOCTYPE html>\n<html><body>Hello</body></html>\n"
+    action = {
+        **action_payload(),
+        "start_line": 1,
+        "end_line": 1,
+        "old_code": "",
+        "new_code": new_content,
+    }
+    response = json.dumps({
+        "plan": ["Add the website markup"],
+        "actions": [action],
+        "validation_command": None,
+    })
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(response))
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create a website"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+    applied = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"action_indexes": [0]},
+    )
+
+    assert task["status"] == "awaiting_approval"
+    assert applied.status_code == 200
+    assert applied.json()["actions"][0]["status"] == "applied", applied.json()
+    assert applied.json()["changes"][0]["content"] == new_content
+    file = agent_db.get(ProjectFile, 11)
+    assert file.content == new_content
+
+
 def test_agent_approval_rejects_stale_patch(agent_db, monkeypatch):
     client = make_agent_client(agent_db, monkeypatch)
     monkeypatch.setattr(agent_router, "ai_service", FakeAIService(make_plan_response()))
@@ -232,6 +300,26 @@ def test_agent_approval_rejects_stale_patch(agent_db, monkeypatch):
     assert response.json()["status"] == "failed"
     assert response.json()["actions"][0]["status"] == "failed"
     assert file.content.endswith("return 9\n")
+
+
+def test_agent_approval_preserves_file_changes_outside_patch(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(make_plan_response()))
+    created = client.post("/ai/agent/tasks", json={"project_id": 1, "task": "Update calculate"})
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+    file = agent_db.get(ProjectFile, 11)
+    file.content += "# user edit after proposal\n"
+    agent_db.commit()
+
+    response = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"action_indexes": [0]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["actions"][0]["status"] == "applied"
+    assert file.content == "def calculate():\n    return 2\n# user edit after proposal\n"
 
 
 def test_agent_task_is_not_visible_to_another_user(agent_db, monkeypatch):

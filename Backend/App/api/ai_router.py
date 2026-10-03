@@ -19,6 +19,9 @@ from App.service.AI.ai_service import AIService
 from App.service.AI.context.repository_relevance import (
     RepositoryRelevanceService,
 )
+from App.service.AI.context.repository_context import (
+    RepositoryContextBuilder,
+)
 from App.service.AI.index.indexed_context_service import (
     IndexedContextService,
 )
@@ -182,6 +185,12 @@ async def chat(
                     detail="Project not found",
                 )
 
+            project_structure = RepositoryContextBuilder(
+                db=db,
+                project_id=project_id,
+                max_chars=12000,
+            ).build_tree()
+
             relevance_service = (
                 RepositoryRelevanceService(
                     db=db,
@@ -240,16 +249,32 @@ async def chat(
                     type(exc).__name__,
                 )
 
+            repository_context = "\n\n".join(
+                part
+                for part in (
+                    project_structure,
+                    repository_context,
+                )
+                if part
+            )
+
             if terminal_context_block or selected_context_block:
                 prioritized_context = []
                 if terminal_context_block:
+                    if repository_context:
+                        prioritized_context.append(
+                            f"REPOSITORY CONTEXT\n\n{repository_context}"
+                        )
                     prioritized_context.append(terminal_context_block)
-                if selected_context_block:
-                    prioritized_context.append(selected_context_block)
-                if repository_context:
-                    prioritized_context.append(
-                        f"REPOSITORY CONTEXT\n\n{repository_context}"
-                    )
+                    if selected_context_block:
+                        prioritized_context.append(selected_context_block)
+                else:
+                    if selected_context_block:
+                        prioritized_context.append(selected_context_block)
+                    if repository_context:
+                        prioritized_context.append(
+                            f"REPOSITORY CONTEXT\n\n{repository_context}"
+                        )
                 if request.context:
                     prioritized_context.append(
                         f"CURRENT FILE CONTEXT\n\n{request.context}"

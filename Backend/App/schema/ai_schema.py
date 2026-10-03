@@ -104,8 +104,10 @@ class CodeAction(BaseModel):
                 raise ValueError("replace actions require start_line and end_line")
             if self.end_line < self.start_line:
                 raise ValueError("end_line must be greater than or equal to start_line")
-            if not self.old_code:
+            if "old_code" not in self.model_fields_set:
                 raise ValueError("replace actions require old_code")
+            if not self.old_code and (self.start_line, self.end_line) != (1, 1):
+                raise ValueError("empty old_code is only valid at line 1")
         return self
 
 

@@ -57,7 +57,7 @@ def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
     return task
 
 
-def _plan_task(task_id: str, user_id: int) -> None:
+async def _plan_task(task_id: str, user_id: int) -> None:
     task = agent_tasks.get(task_id, user_id)
     if task is None or getattr(task, "status", None) == "cancelled":
         return
@@ -95,25 +95,45 @@ def _plan_task(task_id: str, user_id: int) -> None:
         )
         if getattr(task, "status", None) == "cancelled":
             return
-        response = asyncio.run(
-            ai_service.chat(
-                message=TaskPlanner.prompt(task.task),
-                context=context or "No relevant repository context was found.",
-                history=[],
-            )
+        response = await ai_service.chat(
+            message=TaskPlanner.prompt(task.task),
+            context=context or "No relevant repository context was found.",
+            history=[],
         )
         if getattr(task, "status", None) == "cancelled":
             return
-        plan, actions, command = TaskPlanner.parse(response)
+        try:
+            plan, actions, command = TaskPlanner.parse(response)
+        except ValueError as error:
+            task.add_step(
+                "plan", "running", "Repairing invalid implementation plan",
+                error=str(error),
+            )
+            if getattr(task, "status", None) == "cancelled":
+                return
+            response = await ai_service.chat(
+                message=TaskPlanner.repair_prompt(
+                    task.task, response, str(error)
+                ),
+                context=context or "No relevant repository context was found.",
+                history=[],
+            )
+            if getattr(task, "status", None) == "cancelled":
+                return
+            plan, actions, command = TaskPlanner.parse(response)
         for action in actions:
             target = tools.resolve_file(action.file_path)
             if tools.get_file_path(target) != action.file_path:
                 raise ValueError("Agent action path does not match the project file.")
         task.plan = plan
-        task.actions = [
-            {"action": action.model_dump(), "status": "awaiting_approval", "error": None}
-            for action in actions
-        ]
+        task.actions = []
+        for action in actions:
+            project_file = tools.resolve_file(action.file_path)
+            task.actions.append({
+                "action": action.model_dump(),
+                "status": "awaiting_approval",
+                "error": None,
+            })
         task.validation_command = command
         task.add_step("plan", "completed", "Implementation plan prepared", output="\n".join(plan))
         if actions:
@@ -405,7 +425,7 @@ def continue_agent_task(
     return task.as_dict()
 
 
-def _continue_task(task_id: str, user_id: int) -> None:
+async def _continue_task(task_id: str, user_id: int) -> None:
     task = agent_tasks.get(task_id, user_id)
     if task is None or getattr(task, "status", None) == "cancelled":
         return
@@ -424,17 +444,21 @@ def _continue_task(task_id: str, user_id: int) -> None:
             f"TASK:\n{task.task}\n\n"
             f"VALIDATION RESULT:\n{str(prior_result)[:12000]}"
         )
-        response = asyncio.run(ai_service.chat(message=prompt, context=context, history=[]))
+        response = await ai_service.chat(message=prompt, context=context, history=[])
         if getattr(task, "status", None) == "cancelled":
             return
         plan, actions, command = TaskPlanner.parse(response)
         for action in actions:
             tools.resolve_file(action.file_path)
         task.plan = plan
-        task.actions = [
-            {"action": action.model_dump(), "status": "awaiting_approval", "error": None}
-            for action in actions
-        ]
+        task.actions = []
+        for action in actions:
+            project_file = tools.resolve_file(action.file_path)
+            task.actions.append({
+                "action": action.model_dump(),
+                "status": "awaiting_approval",
+                "error": None,
+            })
         task.validation_command = command
         task.status = "awaiting_approval" if actions or command else "failed"
         task.stop_reason = None if actions or command else "No correction was proposed."
