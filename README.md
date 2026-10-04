@@ -2,11 +2,12 @@
 
 ## Backend migrations
 
-Run database migrations from the `Backend` directory before starting a deployed
-backend:
+Run database migrations from the `Backend` directory after updating the
+application and before starting the backend. `Base.metadata.create_all()` does
+not alter existing tables, so it cannot replace this step:
 
 ```text
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 The migration configuration reads the backend environment (including

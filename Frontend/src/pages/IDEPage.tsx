@@ -851,6 +851,49 @@ export default function IDEPage() {
         setRefreshKey((current) => current + 1);
     }
 
+    function handleAgentChangesApplied(
+        changes: { path: string; content: string; file_id: number }[],
+    ) {
+        if (changes.length === 0) {
+            return;
+        }
+
+        setTabs((currentTabs) => {
+            const updatedTabs = [...currentTabs];
+            for (const change of changes) {
+                const name = change.path.split("/").pop() ?? change.path;
+                const existingIndex = updatedTabs.findIndex(
+                    (tab) => tab.file.id === change.file_id,
+                );
+                const existingTab = existingIndex >= 0
+                    ? updatedTabs[existingIndex]
+                    : undefined;
+                const updatedTab: EditorTab = {
+                    file: existingTab?.file ?? {
+                        id: change.file_id,
+                        name,
+                        type: "file",
+                        parent_id: null,
+                        path: change.path,
+                    },
+                    content: change.content,
+                    language: existingTab?.language ?? getLanguageFromFileName(name),
+                    isDirty: false,
+                };
+
+                if (existingIndex >= 0) {
+                    updatedTabs[existingIndex] = updatedTab;
+                } else {
+                    updatedTabs.push(updatedTab);
+                }
+            }
+            return updatedTabs;
+        });
+        setActiveTabId(changes[changes.length - 1].file_id);
+        setRefreshKey((current) => current + 1);
+        setSaveError("");
+    }
+
     async function saveFile() {
 
         if (!activeTab) {
@@ -2020,16 +2063,7 @@ export default function IDEPage() {
                             ref={aiChatRef}
                             projectId={numericProjectId}
                             hasUnsavedChanges={tabs.some((tab) => tab.isDirty)}
-                            onAgentChangesApplied={(changes) => {
-                                setTabs((currentTabs) => currentTabs.map((tab) => {
-                                    const changedFile = changes.find((change) => change.file_id === tab.file.id);
-                                    return changedFile && !tab.isDirty
-                                        ? { ...tab, content: changedFile.content, isDirty: false }
-                                        : tab;
-                                }));
-                                setRefreshKey((current) => current + 1);
-                                setSaveError("");
-                            }}
+                            onAgentChangesApplied={handleAgentChangesApplied}
                             context={activeTab?.content ?? null}
                             fileName={activeTab?.file.name ?? null}
                             filePath={activeTab?.file.path ?? activeTab?.file.name ?? null}

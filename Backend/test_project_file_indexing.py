@@ -61,6 +61,10 @@ class FakeIndexService:
     def needs_indexing(self, file):
         return True
 
+    def index_file_after_save(self, file, only_if_needed=False):
+        if not only_if_needed or self.needs_indexing(file):
+            self.create_or_update_index(file)
+
 
 def test_created_files_are_indexed(monkeypatch):
     FakeIndexService.calls = []

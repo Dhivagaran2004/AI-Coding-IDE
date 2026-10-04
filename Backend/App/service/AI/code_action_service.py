@@ -178,7 +178,7 @@ class CodeActionService:
             db=self.db,
             project_id=project_id,
             vector_index_service=self.vector_index_service,
-        ).create_or_update_index(project_file)
+        ).index_file_after_save(project_file)
         return project_file
 
     @staticmethod

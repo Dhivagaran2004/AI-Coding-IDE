@@ -11,7 +11,10 @@ import { DiffEditor } from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+    ChevronDown,
     Check,
+    MoreVertical,
+    Plus,
 } from "lucide-react";
 import "./AIChat.css";
 import {
@@ -669,13 +672,24 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const [previewPatch, setPreviewPatch] =
         useState<CodeAction | null>(null);
 
+    const [previewError, setPreviewError] = useState<string | null>(null);
+
     const [isApplyingPatch, setIsApplyingPatch] =
         useState(false);
+    const agentApprovalInFlightRef = useRef(false);
     const [mode, setMode] = useState<"ask" | "plan" | "edit" | "agent">("ask");
     const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
     const modePickerRef = useRef<HTMLDivElement | null>(null);
     const modePickerButtonRef = useRef<HTMLButtonElement | null>(null);
+    const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+    const actionsMenuRef = useRef<HTMLDivElement | null>(null);
+    const actionsMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+    const [isConversationMenuOpen, setIsConversationMenuOpen] = useState(false);
+    const conversationMenuRef = useRef<HTMLDivElement | null>(null);
+    const conversationMenuButtonRef = useRef<HTMLButtonElement | null>(null);
     const [agentTask, setAgentTask] = useState<AgentTask | null>(null);
+    const [agentUndoError, setAgentUndoError] = useState<string | null>(null);
+    const [isUndoingAgentTask, setIsUndoingAgentTask] = useState(false);
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
     const generationAbortRef = useRef<AbortController | null>(null);
     const [conversations, setConversations] = useState<AIConversationSummary[]>([]);
@@ -770,6 +784,56 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
             document.removeEventListener("keydown", closeOnEscape);
         };
     }, [isModeMenuOpen]);
+
+    useEffect(() => {
+        if (!isActionsMenuOpen) {
+            return;
+        }
+
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (!actionsMenuRef.current?.contains(event.target as Node)) {
+                setIsActionsMenuOpen(false);
+            }
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setIsActionsMenuOpen(false);
+                actionsMenuButtonRef.current?.focus();
+            }
+        };
+
+        document.addEventListener("pointerdown", closeOnOutsidePointer);
+        document.addEventListener("keydown", closeOnEscape);
+        return () => {
+            document.removeEventListener("pointerdown", closeOnOutsidePointer);
+            document.removeEventListener("keydown", closeOnEscape);
+        };
+    }, [isActionsMenuOpen]);
+
+    useEffect(() => {
+        if (!isConversationMenuOpen) {
+            return;
+        }
+
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (!conversationMenuRef.current?.contains(event.target as Node)) {
+                setIsConversationMenuOpen(false);
+            }
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setIsConversationMenuOpen(false);
+                conversationMenuButtonRef.current?.focus();
+            }
+        };
+
+        document.addEventListener("pointerdown", closeOnOutsidePointer);
+        document.addEventListener("keydown", closeOnEscape);
+        return () => {
+            document.removeEventListener("pointerdown", closeOnOutsidePointer);
+            document.removeEventListener("keydown", closeOnEscape);
+        };
+    }, [isConversationMenuOpen]);
 
     useEffect(() => {
         if (
@@ -882,6 +946,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         action: CodeAction,
         messageId: number,
     ) => {
+        setPreviewError(null);
         setPreviewPatch(action);
         setPreviewCode(action.new_code);
         setPreviewMessageId(messageId);
@@ -889,6 +954,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     };
 
     const handlePreviewAgentAction = (action: CodeAction, index: number) => {
+        setPreviewError(null);
         setPreviewAgentActionIndex(index);
         setPreviewPatch(action);
         setPreviewCode(action.new_code);
@@ -903,9 +969,161 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const closePreview = () => {
         setPreviewCode(null);
         setPreviewPatch(null);
+        setPreviewError(null);
         setPreviewMessageId(null);
         setPreviewAction("general");
         setPreviewAgentActionIndex(null);
+    };
+
+    const handleAgentApproval = async (
+        approval: {
+            action_indexes?: number[];
+            reject_indexes?: number[];
+            accept_all?: boolean;
+            reject_all?: boolean;
+        },
+        previewActionIndex?: number,
+    ) => {
+        if (!agentTask || agentApprovalInFlightRef.current) {
+            return;
+        }
+
+        agentApprovalInFlightRef.current = true;
+        const task = agentTask;
+        const approvedIndexes = approval.accept_all
+            ? task.actions.flatMap((item, index) =>
+                item.status === "awaiting_approval" ? [index] : [],
+            )
+            : approval.action_indexes ?? [];
+
+        setPreviewError(null);
+        setIsApplyingPatch(true);
+        try {
+            const updated = await approveAgentChanges(task.id, approval);
+            setAgentTask(updated);
+            if (updated.changes?.length) {
+                onAgentChangesApplied?.(updated.changes);
+            }
+
+            const unappliedIndex = approvedIndexes.find(
+                (index) => updated.actions[index]?.status !== "applied",
+            );
+            if (unappliedIndex !== undefined) {
+                throw new Error(
+                    updated.actions[unappliedIndex]?.error ??
+                        "The server did not apply this proposed change.",
+                );
+            }
+
+            if (previewActionIndex !== undefined) {
+                closePreview();
+            }
+        } catch (error) {
+            const errorMessage = axios.isAxiosError(error)
+                ? typeof error.response?.data?.detail === "string"
+                    ? error.response.data.detail
+                    : error.message
+                : error instanceof Error
+                    ? error.message
+                    : "The change could not be applied.";
+
+            if (
+                axios.isAxiosError(error) &&
+                error.response?.status === 409 &&
+                approvedIndexes.length > 0
+            ) {
+                try {
+                    let latest = await getAgentTask(task.id);
+                    setAgentTask(latest);
+                    const syncAppliedFiles = (changes: AgentTask["changes"]) => {
+                        const approvedPaths = new Set(
+                            approvedIndexes.flatMap((index) => {
+                                const path = task.actions[index]?.action.file_path;
+                                return path ? [path] : [];
+                            }),
+                        );
+                        const appliedChanges = (changes ?? []).filter(
+                            (change) => approvedPaths.has(change.path),
+                        );
+                        if (appliedChanges.length === 0) {
+                            return false;
+                        }
+                        onAgentChangesApplied?.(appliedChanges);
+                        if (previewActionIndex !== undefined) {
+                            closePreview();
+                        }
+                        return true;
+                    };
+
+                    const allApplied = () => approvedIndexes.every(
+                        (index) => latest.actions[index]?.status === "applied",
+                    );
+                    if (allApplied() && syncAppliedFiles(latest.changes)) {
+                        return;
+                    }
+
+                    const canRetry = latest.status === "awaiting_approval"
+                        && approvedIndexes.every(
+                            (index) => latest.actions[index]?.status === "awaiting_approval",
+                        );
+                    if (canRetry) {
+                        try {
+                            latest = await approveAgentChanges(task.id, {
+                                action_indexes: approvedIndexes,
+                            });
+                            setAgentTask(latest);
+                            if (
+                                approvedIndexes.every(
+                                    (index) => latest.actions[index]?.status === "applied",
+                                ) &&
+                                syncAppliedFiles(latest.changes)
+                            ) {
+                                return;
+                            }
+                        } catch (retryError) {
+                            const retryMessage = axios.isAxiosError(retryError)
+                                ? typeof retryError.response?.data?.detail === "string"
+                                    ? retryError.response.data.detail
+                                    : retryError.message
+                                : retryError instanceof Error
+                                    ? retryError.message
+                                    : "The approval retry failed.";
+                            setPreviewError(
+                                `Unable to apply this change: ${retryMessage} (task status: ${latest.status})`,
+                            );
+                            return;
+                        }
+                    }
+
+                    const actionStatus = approvedIndexes
+                        .map((index) => latest.actions[index]?.status ?? "missing")
+                        .join(", ");
+                    setPreviewError(
+                        `Unable to apply this change: ${errorMessage} (task status: ${latest.status}; change status: ${actionStatus})`,
+                    );
+                    return;
+                } catch (refreshError) {
+                    const refreshMessage = axios.isAxiosError(refreshError)
+                        ? refreshError.message
+                        : refreshError instanceof Error
+                            ? refreshError.message
+                            : "Unable to refresh the agent task.";
+                    setPreviewError(
+                        `Unable to apply this change: ${errorMessage} (refresh failed: ${refreshMessage})`,
+                    );
+                    return;
+                }
+            }
+
+            if (previewActionIndex !== undefined) {
+                setPreviewError(`Unable to apply this change: ${errorMessage}`);
+            } else {
+                addMessage("assistant", `Unable to apply agent changes: ${errorMessage}`);
+            }
+        } finally {
+            agentApprovalInFlightRef.current = false;
+            setIsApplyingPatch(false);
+        }
     };
 
     /* =====================================================
@@ -932,21 +1150,10 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
 
         if (previewPatch) {
             if (previewAgentActionIndex !== null && agentTask) {
-                setIsApplyingPatch(true);
-                try {
-                    const updated = await approveAgentChanges(agentTask.id, {
-                        action_indexes: [previewAgentActionIndex],
-                    });
-                    setAgentTask(updated);
-                    if (updated.changes?.length) {
-                        onAgentChangesApplied?.(updated.changes);
-                    }
-                    closePreview();
-                } catch (error) {
-                    addMessage("assistant", `Agent change was rejected: ${error instanceof Error ? error.message : "Request failed."}`);
-                } finally {
-                    setIsApplyingPatch(false);
-                }
+                await handleAgentApproval(
+                    { action_indexes: [previewAgentActionIndex] },
+                    previewAgentActionIndex,
+                );
                 return;
             }
             if (!onApplyPatch || isApplyingPatch) {
@@ -964,7 +1171,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                     : error instanceof Error
                         ? error.message
                         : "The patch could not be applied.";
-                addMessage("assistant", `Patch rejected: ${errorMessage}`);
+                setPreviewError(`Unable to apply this change: ${errorMessage}`);
             } finally {
                 setIsApplyingPatch(false);
             }
@@ -1358,146 +1565,193 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                 ================================================= */}
 
             <header className="ai-chat__header">
-                <div className="ai-chat__title-section">
-                    <div className="ai-chat__icon">
-                        AI
-                    </div>
+                <div className="ai-chat__header-top">
+                    <div className="ai-chat__title-section">
+                        <div className="ai-chat__icon">
+                            AI
+                        </div>
 
-                    <div className="ai-chat__title-stack">
-                        <div className="ai-chat__title-row">
+                        <div className="ai-chat__title-stack">
                             <h2 className="ai-chat__title">
-                                AI Assistant
+                                Chat Panel
                             </h2>
-
-                            <span className="ai-chat__status">
-                                <span className="ai-chat__status-dot" />
-
-                                {isLoading
-                                    ? "Thinking..."
-                                    : "Ready"}
-                            </span>
                         </div>
                     </div>
+
+                    <div className="ai-chat__options" ref={actionsMenuRef}>
+                        <div className="ai-chat__conversation-actions" ref={conversationMenuRef}>
+                            <button
+                                type="button"
+                                className="ai-chat__new-chat-button"
+                                aria-label="New conversation"
+                                title="New conversation"
+                                onClick={() => {
+                                    setIsConversationMenuOpen(false);
+                                    setIsActionsMenuOpen(false);
+                                    startNewConversation();
+                                }}
+                                disabled={isLoading}
+                            >
+                                <Plus size={17} aria-hidden="true" />
+                            </button>
+                            <button
+                                ref={conversationMenuButtonRef}
+                                type="button"
+                                className="ai-chat__conversation-menu-button"
+                                aria-label="Conversation actions"
+                                aria-expanded={isConversationMenuOpen}
+                                aria-controls="ai-chat-conversation-actions"
+                                title="Conversation actions"
+                                onClick={() => {
+                                    setIsActionsMenuOpen(false);
+                                    setIsConversationMenuOpen((open) => !open);
+                                }}
+                            >
+                                <ChevronDown size={14} aria-hidden="true" />
+                            </button>
+                            {isConversationMenuOpen && (
+                                <div
+                                    id="ai-chat-conversation-actions"
+                                    className="ai-chat__conversation-menu"
+                                    role="group"
+                                    aria-label="Conversation actions"
+                                >
+                                    <button
+                                        type="button"
+                                        className="ai-chat__options-item"
+                                        onClick={() => {
+                                            setIsConversationMenuOpen(false);
+                                            void handleRenameConversation();
+                                        }}
+                                        disabled={conversationId === null || isLoading}
+                                    >
+                                        Rename
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="ai-chat__options-item"
+                                        onClick={() => {
+                                            setIsConversationMenuOpen(false);
+                                            void handleClearConversation();
+                                        }}
+                                        disabled={conversationId === null || isLoading}
+                                    >
+                                        Clear
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="ai-chat__options-item ai-chat__options-item--danger"
+                                        onClick={() => {
+                                            setIsConversationMenuOpen(false);
+                                            void handleDeleteConversation();
+                                        }}
+                                        disabled={conversationId === null || isLoading}
+                                    >
+                                        Delete
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                        <button
+                            ref={actionsMenuButtonRef}
+                            type="button"
+                            className="ai-chat__menu-button"
+                            aria-label="AI chat options"
+                            aria-expanded={isActionsMenuOpen}
+                            aria-controls="ai-chat-options"
+                            title="Chat options"
+                            onClick={() => {
+                                setIsConversationMenuOpen(false);
+                                setIsActionsMenuOpen((open) => !open);
+                            }}
+                        >
+                            <MoreVertical size={18} aria-hidden="true" />
+                        </button>
+                        {isActionsMenuOpen && (
+                            <div
+                                id="ai-chat-options"
+                                className="ai-chat__options-menu"
+                                role="group"
+                                aria-label="Chat options"
+                            >
+                                <label className="ai-chat__options-label" htmlFor="ai-chat-conversation">
+                                    Conversation
+                                </label>
+                                <select
+                                    id="ai-chat-conversation"
+                                    className="ai-chat__options-select"
+                                    aria-label="AI conversation"
+                                    value={conversationId ?? ""}
+                                    disabled={isLoading}
+                                    onChange={(event) => {
+                                        setIsActionsMenuOpen(false);
+                                        if (!event.target.value) {
+                                            startNewConversation();
+                                            return;
+                                        }
+                                        const id = Number(event.target.value);
+                                        if (id) {
+                                            void openConversation(id).catch((error) =>
+                                                addMessage("assistant", `Unable to open conversation: ${error instanceof Error ? error.message : "Request failed."}`),
+                                            );
+                                        }
+                                    }}
+                                >
+                                    <option value="">New conversation</option>
+                                    {conversations.map((item) => (
+                                        <option key={item.id} value={item.id}>{item.title}</option>
+                                    ))}
+                                </select>
+                                <div className="ai-chat__options-divider" />
+                                <div className="ai-chat__options-label">Code actions</div>
+                                <button
+                                    type="button"
+                                    className="ai-chat__options-item"
+                                    onClick={() => {
+                                        setIsActionsMenuOpen(false);
+                                        setQuickAction("explain", "Explain this code step by step.");
+                                    }}
+                                    disabled={!context?.trim() || isLoading}
+                                >
+                                    Explain code
+                                </button>
+                                <button
+                                    type="button"
+                                    className="ai-chat__options-item"
+                                    onClick={() => {
+                                        setIsActionsMenuOpen(false);
+                                        setQuickAction("fix", "Find the bugs in this code, explain them briefly, and provide the corrected code.");
+                                    }}
+                                    disabled={!context?.trim() || isLoading}
+                                >
+                                    Fix code
+                                </button>
+                                <button
+                                    type="button"
+                                    className="ai-chat__options-item"
+                                    onClick={() => {
+                                        setIsActionsMenuOpen(false);
+                                        setQuickAction("optimize", "Optimize this code for performance, readability, and maintainability. Explain the improvements and provide the optimized code.");
+                                    }}
+                                    disabled={!context?.trim() || isLoading}
+                                >
+                                    Optimize code
+                                </button>
+                                <button
+                                    type="button"
+                                    className="ai-chat__options-item"
+                                    onClick={() => {
+                                        setIsActionsMenuOpen(false);
+                                        setQuickAction("tests", "Generate comprehensive unit tests for this code. Cover normal cases, edge cases, and error cases. Use the appropriate testing framework for the detected language.");
+                                    }}
+                                    disabled={!context?.trim() || isLoading}
+                                >
+                                    Generate tests
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
-
-                <div className="ai-chat__conversation-controls">
-                    <select
-                        aria-label="AI conversation"
-                        value={conversationId ?? ""}
-                        disabled={isLoading}
-                        onChange={(event) => {
-                            if (!event.target.value) {
-                                startNewConversation();
-                                return;
-                            }
-                            const id = Number(event.target.value);
-                            if (id) {
-                                void openConversation(id).catch((error) =>
-                                    addMessage("assistant", `Unable to open conversation: ${error instanceof Error ? error.message : "Request failed."}`),
-                                );
-                            }
-                        }}
-                    >
-                        <option value="">New conversation</option>
-                        {conversations.map((item) => (
-                            <option key={item.id} value={item.id}>{item.title}</option>
-                        ))}
-                    </select>
-                    <button type="button" onClick={startNewConversation} disabled={isLoading}>
-                        New
-                    </button>
-                    {conversationId !== null && (
-                        <>
-                            <button type="button" onClick={() => void handleRenameConversation()} disabled={isLoading}>Rename</button>
-                            <button type="button" onClick={() => void handleClearConversation()} disabled={isLoading}>Clear</button>
-                            <button type="button" onClick={() => void handleDeleteConversation()} disabled={isLoading}>Delete</button>
-                        </>
-                    )}
-                </div>
-
-                {/* Explain */}
-
-                <button
-                    type="button"
-                    className="ai-chat__action-button"
-                    onClick={() =>
-                        setQuickAction(
-                            "explain",
-                            "Explain this code step by step.",
-                        )
-                    }
-                    disabled={
-                        !context?.trim() ||
-                        isLoading
-                    }
-                >
-                    Explain Code
-                </button>
-
-                {/* Fix */}
-
-                <button
-                    type="button"
-                    className="ai-chat__action-button"
-                    onClick={() =>
-                        setQuickAction(
-                            "fix",
-                            "Find the bugs in this code, explain them briefly, and provide the corrected code.",
-                        )
-                    }
-                    disabled={
-                        !context?.trim() ||
-                        isLoading
-                    }
-                >
-                    Fix Code
-                </button>
-
-                {/* Optimize */}
-
-                <button
-                    type="button"
-                    className="ai-chat__action-button"
-                    onClick={() =>
-                        setQuickAction(
-                            "optimize",
-                            "Optimize this code for performance, readability, and maintainability. Explain the improvements and provide the optimized code.",
-                        )
-                    }
-                    disabled={
-                        !context?.trim() ||
-                        isLoading
-                    }
-                >
-                    Optimize
-                </button>
-
-                {/* Generate Tests */}
-
-                <button
-                    type="button"
-                    className="ai-chat__action-button"
-                    onClick={() =>
-                        setQuickAction(
-                            "tests",
-                            "Generate comprehensive unit tests for this code. Cover normal cases, edge cases, and error cases. Use the appropriate testing framework for the detected language.",
-                        )
-                    }
-                    disabled={
-                        !context?.trim() ||
-                        isLoading
-                    }
-                >
-                    Generate Tests
-                </button>
-
-                <button
-                    type="button"
-                    className="ai-chat__menu-button"
-                    aria-label="AI chat menu"
-                >
-                    ⋮
-                </button>
             </header>
 
             {/* =================================================
@@ -1659,12 +1913,9 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                             <>
                                                 <button
                                                     type="button"
-                                                    disabled={hasUnsavedChanges}
+                                                    disabled={hasUnsavedChanges || isApplyingPatch}
                                                     title={hasUnsavedChanges ? "Save or discard editor changes first" : "Approve this file"}
-                                                    onClick={() => void approveAgentChanges(agentTask.id, { action_indexes: [index] }).then((updated) => {
-                                                        setAgentTask(updated);
-                                                        if (updated.changes?.length) onAgentChangesApplied?.(updated.changes);
-                                                    })}
+                                                    onClick={() => void handleAgentApproval({ action_indexes: [index] })}
                                                 >
                                                     <Check size={12} />
                                                     Accept
@@ -1672,7 +1923,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                                 <button
                                                     type="button"
                                                     className="is-secondary"
-                                                    onClick={() => void approveAgentChanges(agentTask.id, { reject_indexes: [index] }).then(setAgentTask)}
+                                                    disabled={isApplyingPatch}
+                                                    onClick={() => void handleAgentApproval({ reject_indexes: [index] })}
                                                 >
                                                     Reject
                                                 </button>
@@ -1687,15 +1939,13 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                     <button
                                         className="is-primary"
                                         type="button"
-                                        disabled={hasUnsavedChanges}
-                                        onClick={() => void approveAgentChanges(agentTask.id, { accept_all: true }).then((updated) => {
-                                            setAgentTask(updated);
-                                            if (updated.changes?.length) onAgentChangesApplied?.(updated.changes);
-                                        })}
+                                        disabled={hasUnsavedChanges || isApplyingPatch}
+                                        onClick={() => void handleAgentApproval({ accept_all: true })}
                                     >Accept all changes</button>
                                     <button
                                         type="button"
-                                        onClick={() => void approveAgentChanges(agentTask.id, { reject_all: true }).then(setAgentTask)}
+                                        disabled={isApplyingPatch}
+                                        onClick={() => void handleAgentApproval({ reject_all: true })}
                                     >Reject all</button>
                                 </div>
                             )}
@@ -1705,25 +1955,44 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                         <p className="ai-chat__agent-note">Save or discard open editor changes before applying.</p>
                     )}
                     {agentTask.change_history.some((change) => !change.rolled_back) && (
-                        <button
-                            type="button"
-                            className="ai-chat__agent-continue"
-                            disabled={hasUnsavedChanges || ["pending", "planning", "executing", "validating"].includes(agentTask.status)}
-                            title={hasUnsavedChanges ? "Save or discard editor changes first" : "Restore files only if they have not changed since the AI action"}
-                            onClick={() => {
-                                if (!window.confirm("Undo all applied changes from this agent task?")) {
-                                    return;
-                                }
-                                void undoAgentTask(agentTask.id).then((updated) => {
-                                    setAgentTask(updated);
-                                    if (updated.changes?.length) {
-                                        onAgentChangesApplied?.(updated.changes);
+                        <>
+                            <button
+                                type="button"
+                                className="ai-chat__agent-continue"
+                                disabled={isUndoingAgentTask || hasUnsavedChanges || ["pending", "planning", "executing", "validating"].includes(agentTask.status)}
+                                title={hasUnsavedChanges ? "Save or discard editor changes first" : "Restore files only if they have not changed since the AI action"}
+                                onClick={() => {
+                                    if (!window.confirm("Undo all applied changes from this agent task?")) {
+                                        return;
                                     }
-                                });
-                            }}
-                        >
-                            Undo AI changes
-                        </button>
+                                    setAgentUndoError(null);
+                                    setIsUndoingAgentTask(true);
+                                    void undoAgentTask(agentTask.id)
+                                        .then((updated) => {
+                                            setAgentTask(updated);
+                                            if (updated.changes?.length) {
+                                                onAgentChangesApplied?.(updated.changes);
+                                            }
+                                        })
+                                        .catch((error: unknown) => {
+                                            const message = axios.isAxiosError(error)
+                                                ? typeof error.response?.data?.detail === "string"
+                                                    ? error.response.data.detail
+                                                    : error.message
+                                                : error instanceof Error
+                                                    ? error.message
+                                                    : "The AI changes could not be undone.";
+                                            setAgentUndoError(message);
+                                        })
+                                        .finally(() => setIsUndoingAgentTask(false));
+                                }}
+                            >
+                                {isUndoingAgentTask ? "Undoing..." : "Undo AI changes"}
+                            </button>
+                            {agentUndoError && (
+                                <p className="ai-chat__agent-error" role="alert">{agentUndoError}</p>
+                            )}
+                        </>
                     )}
                     {agentTask.validation_command && agentTask.actions.every((item) => item.status !== "awaiting_approval") && (
                         <div className="ai-chat__agent-validation">
@@ -1842,6 +2111,12 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                             }}
                         />
                     </div>
+
+                    {previewError && (
+                        <p className="ai-chat__preview-error" role="alert">
+                            {previewError}
+                        </p>
+                    )}
 
                     {/* Preview actions */}
 

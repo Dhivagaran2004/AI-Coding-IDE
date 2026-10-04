@@ -68,7 +68,7 @@ def test_migrations_upgrade_fresh_database(tmp_path):
         } <= tables
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20261004_04"
+        ).fetchone()[0] == "20261004_05"
         assert "error_message" in {
             row[1]
             for row in connection.execute("PRAGMA table_info(repository_indexes)")
@@ -132,4 +132,46 @@ def test_migrations_preserve_existing_application_data(tmp_path):
         ).fetchone()[0] == "Existing conversation"
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20261004_04"
+        ).fetchone()[0] == "20261004_05"
+
+
+def test_latest_migration_repairs_missing_repository_index_error_column(tmp_path):
+    database_path = tmp_path / "missing-index-error-column.sqlite"
+    environment = _migration_environment(database_path)
+    create_schema = (
+        "import App.models; "
+        "from App.database.database import Base, engine; "
+        "Base.metadata.create_all(bind=engine)"
+    )
+    setup_result = subprocess.run(
+        [sys.executable, "-c", create_schema],
+        cwd=BACKEND_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert setup_result.returncode == 0, setup_result.stdout + setup_result.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "ALTER TABLE repository_indexes DROP COLUMN error_message"
+        )
+        connection.execute(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO alembic_version (version_num) VALUES ('20261004_04')"
+        )
+
+    _run_alembic(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(repository_indexes)")
+        }
+        assert "error_message" in columns
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0] == "20261004_05"

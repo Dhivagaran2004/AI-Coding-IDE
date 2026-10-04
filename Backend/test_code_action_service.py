@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
@@ -119,6 +120,27 @@ def test_valid_patch_applies_after_explicit_service_call_and_reindexes(patch_db)
 
     assert updated.content == "def calculate():\n    return 2\n"
     assert vector_indexer.indexed_file_ids == [11]
+
+
+def test_patch_remains_applied_when_repository_indexing_fails(
+    patch_db,
+    monkeypatch,
+    caplog,
+):
+    def fail_indexing(self, file):
+        raise SQLAlchemyError("repository index schema is unavailable")
+
+    monkeypatch.setattr(
+        "App.service.AI.code_action_service.RepositoryIndexService.create_or_update_index",
+        fail_indexing,
+    )
+    service, _ = make_service(patch_db)
+
+    updated = service.apply_action(1, 11, 1, make_action())
+
+    assert updated.content == "def calculate():\n    return 2\n"
+    assert patch_db.get(ProjectFile, 11).content == updated.content
+    assert "Project file 11 was saved, but repository indexing failed." in caplog.text
 
 
 def test_patch_matches_lf_action_against_crlf_file_and_preserves_eol(patch_db):

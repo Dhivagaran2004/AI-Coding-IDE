@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from App.config import AI_INDEX_MAX_FILE_CHARS
@@ -172,6 +173,22 @@ class RepositoryIndexService:
                 self.db.rollback()
 
             raise
+
+    def index_file_after_save(
+        self,
+        file: ProjectFile,
+        only_if_needed: bool = False,
+    ) -> None:
+        try:
+            if only_if_needed and not self.needs_indexing(file):
+                return
+            self.create_or_update_index(file)
+        except SQLAlchemyError:
+            self.db.rollback()
+            logger.exception(
+                "Project file %s was saved, but repository indexing failed.",
+                file.id,
+            )
 
     def _index_vectors(self, file: ProjectFile) -> None:
         try:

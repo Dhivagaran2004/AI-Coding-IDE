@@ -136,19 +136,47 @@ async def _plan_task(task_id: str, user_id: int) -> None:
             else:
                 raise last_error
         if not actions and not command:
+            previous_response = response
+            for attempt in range(2):
+                task.add_step(
+                    "plan",
+                    "running",
+                    "Retrying implementation plan with relevant files",
+                    input=f"Implementation retry {attempt + 1} of 2",
+                )
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                response = await ai_service.chat(
+                    message=TaskPlanner.missing_actions_prompt(
+                        task.task, previous_response
+                    ),
+                    context=context or "No relevant repository context was found.",
+                    history=[],
+                )
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                plan, actions, command = TaskPlanner.parse(response)
+                if actions or command:
+                    break
+                previous_response = response
+
+        if not actions and not command:
+            task.plan = plan
+            task.actions = []
+            task.validation_command = None
+            task.status = "failed"
+            task.stop_reason = (
+                "The agent could not prepare a code change from the available "
+                "project files. Retry planning or specify the file and behavior "
+                "you want changed."
+            )
             task.add_step(
-                "plan", "running", "Retrying plan with inferred file targets",
+                "finish",
+                "failed",
+                "No code changes were proposed",
+                error=task.stop_reason,
             )
-            if getattr(task, "status", None) == "cancelled":
-                return
-            response = await ai_service.chat(
-                message=TaskPlanner.missing_actions_prompt(task.task, response),
-                context=context or "No relevant repository context was found.",
-                history=[],
-            )
-            if getattr(task, "status", None) == "cancelled":
-                return
-            plan, actions, command = TaskPlanner.parse(response)
+            return
         for action in actions:
             target = tools.resolve_file(action.file_path)
             if tools.get_file_path(target) != action.file_path:

@@ -18,6 +18,28 @@ class AgentToolError(ValueError):
 class AgentTools:
     MAX_INSPECT_CHARS = 25000
     MAX_SEARCH_RESULTS = 20
+    SEARCH_STOP_WORDS = {
+        "a",
+        "add",
+        "an",
+        "and",
+        "build",
+        "change",
+        "create",
+        "for",
+        "generate",
+        "implement",
+        "in",
+        "make",
+        "of",
+        "on",
+        "please",
+        "the",
+        "to",
+        "update",
+        "using",
+        "with",
+    }
     SECRET_CONTENT = re.compile(
         r"(?i)(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|"
         r"access[_-]?token|refresh[_-]?token|credential)\s*[:=]|"
@@ -76,7 +98,11 @@ class AgentTools:
         }
 
     def search_project(self, query: str) -> list[dict[str, object]]:
-        terms = [term[:80] for term in query.split() if term][:8]
+        terms = [
+            term[:80]
+            for term in re.findall(r"[A-Za-z0-9_]+", query.casefold())
+            if len(term) > 1 and term not in self.SEARCH_STOP_WORDS
+        ][:8]
         if not terms:
             return []
         files = (
@@ -89,41 +115,56 @@ class AgentTools:
             .limit(1000)
             .all()
         )
-        matches: list[dict[str, object]] = []
+        matches: list[tuple[int, dict[str, object]]] = []
         for project_file in files:
             path = self.get_file_path(project_file)
             content = cast(str | None, project_file.content) or ""
             if not self.is_safe_path(path) or self.SECRET_CONTENT.search(content):
                 continue
+            folded_path = path.casefold()
+            folded_content = content.casefold()
+            path_terms = [
+                term for term in terms if term in folded_path
+            ]
+            content_terms = [
+                term for term in terms if term in folded_content
+            ]
             matching_terms = [
                 term for term in terms
-                if term.casefold() in path.casefold()
-                or term.casefold() in content.casefold()
+                if term in path_terms or term in content_terms
             ]
             if not matching_terms:
                 continue
+            score = len(path_terms) * 3 + len(content_terms)
+            if "python" in terms and folded_path.endswith(".py"):
+                score += 2
             content_lines = content.splitlines()
             line_number = next(
                 (
                     index + 1
                     for index, line in enumerate(content_lines)
-                    if any(term.casefold() in line.casefold() for term in terms)
+                    if any(term in line.casefold() for term in content_terms)
                 ),
                 0,
             )
             start = max(0, line_number - 3)
             snippet = "\n".join(content_lines[start:start + 6])[:1500]
             matches.append(
-                {
-                    "path": path,
-                    "line": line_number or None,
-                    "snippet": snippet,
-                    "matched_terms": matching_terms,
-                }
+                (
+                    score,
+                    {
+                        "path": path,
+                        "line": line_number or None,
+                        "snippet": snippet,
+                        "matched_terms": matching_terms,
+                    },
+                )
             )
-            if len(matches) >= self.MAX_SEARCH_RESULTS:
-                break
-        return matches
+        matches.sort(key=lambda match: match[0], reverse=True)
+        return [
+            result
+            for _, result in matches[:self.MAX_SEARCH_RESULTS]
+        ]
 
     def retrieve_context(self, query: str) -> str:
         relevance = RepositoryRelevanceService(

@@ -315,7 +315,7 @@ def create_file_or_folder(
         RepositoryIndexService(
             db=db,
             project_id=project_id,
-        ).create_or_update_index(new_item)
+        ).index_file_after_save(new_item)
 
     return new_item
 
@@ -496,8 +496,10 @@ def update_project_file(
             db=db,
             project_id=project_id,
         )
-        if index_service.needs_indexing(project_file):
-            index_service.create_or_update_index(project_file)
+        index_service.index_file_after_save(
+            project_file,
+            only_if_needed=True,
+        )
     elif project_file.type == "file":
         VectorRAGService(
             db=db,
@@ -686,4 +688,3 @@ def get_project_file_tree(
         assign_paths(root)
 
     return roots
-

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -427,6 +428,37 @@ def test_agent_task_requires_approval_before_applying_changes(agent_db, monkeypa
     assert file.content.endswith("return 2\n")
 
 
+def test_agent_approval_completes_if_repository_reindexing_fails(
+    agent_db,
+    monkeypatch,
+):
+    def fail_indexing(self, file):
+        raise SQLAlchemyError("Repository index schema is unavailable.")
+
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(make_plan_response()))
+    monkeypatch.setattr(
+        "App.service.AI.code_action_service.RepositoryIndexService.create_or_update_index",
+        fail_indexing,
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+    applied = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"action_indexes": [0]},
+    )
+
+    assert applied.status_code == 200
+    assert applied.json()["status"] == "completed"
+    assert applied.json()["actions"][0]["status"] == "applied"
+    assert applied.json()["changes"][0]["content"].endswith("return 2\n")
+    assert agent_db.get(ProjectFile, 11).content.endswith("return 2\n")
+
+
 def test_agent_retries_empty_plan_with_inferred_file_targets(agent_db, monkeypatch):
     empty_plan = json.dumps({
         "plan": ["Identify the files needed for the login page"],
@@ -447,7 +479,88 @@ def test_agent_retries_empty_plan_with_inferred_file_targets(agent_db, monkeypat
     assert len(task["actions"]) == 1
     assert "infer the relevant existing target files" in service.messages[1]
     assert any(
-        step["description"] == "Retrying plan with inferred file targets"
+        step["description"] == "Retrying implementation plan with relevant files"
+        for step in task["steps"]
+    )
+
+
+def test_agent_search_prioritizes_relevant_files_over_common_words(agent_db):
+    frontend = ProjectFile(
+        id=30,
+        project_id=1,
+        name="frontend",
+        type="folder",
+        content=None,
+        language=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    irrelevant_files = [
+        ProjectFile(
+            id=file_id,
+            project_id=1,
+            parent_id=30,
+            name=f"component-{file_id}.tsx",
+            type="file",
+            content="const app = 1;\n",
+            language="typescript",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        for file_id in range(31, 37)
+    ]
+    backend = ProjectFile(
+        id=40,
+        project_id=1,
+        name="backend",
+        type="folder",
+        content=None,
+        language=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    auth_file = ProjectFile(
+        id=41,
+        project_id=1,
+        parent_id=40,
+        name="auth.py",
+        type="file",
+        content="def login_user(user):\n    return user\n# python authentication\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add_all([frontend, *irrelevant_files, backend, auth_file])
+    agent_db.commit()
+
+    results = AgentTools(agent_db, 1, 1).search_project(
+        "generate a login auth flow using python"
+    )
+
+    assert results[0]["path"] == "backend/auth.py"
+
+
+def test_agent_fails_and_allows_retry_when_plan_stays_empty(agent_db, monkeypatch):
+    empty_plan = json.dumps({
+        "plan": ["No file changes were proposed"],
+        "actions": [],
+        "validation_command": None,
+    })
+    service = FakeAIService(empty_plan)
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Generate a login auth flow using Python"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "failed"
+    assert task["stop_reason"]
+    assert len(service.messages) == 3
+    assert any(
+        step["description"] == "No code changes were proposed"
         for step in task["steps"]
     )
 
