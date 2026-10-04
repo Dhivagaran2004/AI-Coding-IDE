@@ -1,4 +1,4 @@
-import axios from "axios";
+import api from "./api";
 
 
 // =========================================
@@ -58,13 +58,10 @@ export async function executeTerminalCommand(
     command: string
 ): Promise<TerminalExecuteResponse> {
 
-    const response =
-        await axios.post<TerminalExecuteResponse>(
-            `http://127.0.0.1:8000/projects/${projectId}/terminal/execute`,
-            {
-                command: command,
-            }
-        );
+    const response = await api.post<TerminalExecuteResponse>(
+        `/projects/${projectId}/terminal/execute`,
+        { command },
+    );
 
 
     return response.data;
@@ -79,10 +76,9 @@ export async function stopTerminalCommand(
     projectId: number
 ): Promise<TerminalStopResponse> {
 
-    const response =
-        await axios.post<TerminalStopResponse>(
-            `http://127.0.0.1:8000/projects/${projectId}/terminal/stop`
-        );
+    const response = await api.post<TerminalStopResponse>(
+        `/projects/${projectId}/terminal/stop`,
+    );
 
 
     return response.data;

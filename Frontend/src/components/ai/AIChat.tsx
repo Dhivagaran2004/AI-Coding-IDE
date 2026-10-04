@@ -1,10 +1,13 @@
 import {
+    forwardRef,
     useEffect,
+    useImperativeHandle,
     useMemo,
     useRef,
     useState,
 } from "react";
 import axios from "axios";
+import { DiffEditor } from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -15,10 +18,19 @@ import {
     approveAgentChanges,
     approveAgentValidation,
     cancelAgentTask,
+    clearAIConversation,
     continueAgentTask,
+    createAIConversation,
     createAgentTask,
-    sendAIChat,
+    deleteAIConversation,
+    getAIConversation,
+    getAgentTasks,
+    listAIConversations,
+    renameAIConversation,
+    streamAIChat,
     getAgentTask,
+    undoAgentTask,
+    type AIConversationSummary,
     type AgentTask,
     type AIMessage,
     type CodeAction,
@@ -62,6 +74,10 @@ type AIChatProps = {
     undoCount?: number;
 
     undoHistory?: AIHistoryItem[];
+};
+
+export type AIChatHandle = {
+    askAboutTerminal: () => void;
 };
 
 type ChatMessage = {
@@ -588,7 +604,7 @@ function buildSelectedCode(
    AI CHAT COMPONENT
    ========================================================= */
 
-function AIChat({
+const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     projectId,
     context,
     fileName,
@@ -604,7 +620,7 @@ function AIChat({
     canUndo = false,
     undoCount = 0,
     undoHistory = [],
-}: AIChatProps) {
+}: AIChatProps, ref) {
     /* =====================================================
        STATE
        ===================================================== */
@@ -661,6 +677,9 @@ function AIChat({
     const modePickerButtonRef = useRef<HTMLButtonElement | null>(null);
     const [agentTask, setAgentTask] = useState<AgentTask | null>(null);
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
+    const generationAbortRef = useRef<AbortController | null>(null);
+    const [conversations, setConversations] = useState<AIConversationSummary[]>([]);
+    const [conversationId, setConversationId] = useState<number | null>(null);
 
     const inputRef =
         useRef<HTMLTextAreaElement | null>(
@@ -767,6 +786,55 @@ function AIChat({
         return () => window.clearInterval(timer);
     }, [agentTask?.id, agentTask?.status]);
 
+    useEffect(() => {
+        let active = true;
+        setConversationId(null);
+        setMessages([]);
+        void listAIConversations(projectId)
+            .then((items) => {
+                if (active) {
+                    setConversations(items);
+                }
+            })
+            .catch((error) => {
+                if (active) {
+                    console.error("Unable to load AI conversations:", error);
+                }
+            });
+        return () => {
+            active = false;
+        };
+    }, [projectId]);
+
+    useEffect(() => {
+        let active = true;
+        void getAgentTasks(projectId)
+            .then((tasks) => {
+                if (!active || agentTask) {
+                    return;
+                }
+                const recovered = tasks.find((task) =>
+                    !["completed", "failed", "cancelled"].includes(task.status),
+                );
+                if (recovered) {
+                    setAgentTask(recovered);
+                }
+            })
+            .catch((error) => {
+                if (active) {
+                    console.error("Unable to recover agent tasks:", error);
+                }
+            });
+        return () => {
+            active = false;
+        };
+    }, [projectId]);
+
+    useEffect(
+        () => () => generationAbortRef.current?.abort(),
+        [],
+    );
+
     /* =====================================================
        ADD MESSAGE
        ===================================================== */
@@ -851,8 +919,14 @@ function AIChat({
             return;
         }
 
-        if (previewAgentActionIndex !== null && hasUnsavedChanges) {
-            addMessage("assistant", "Save or discard your open editor changes before applying agent changes.");
+        if (
+            hasUnsavedChanges
+            && (previewAgentActionIndex !== null || !previewPatch)
+        ) {
+            addMessage(
+                "assistant",
+                "Save or discard your open editor changes before applying this AI change.",
+            );
             return;
         }
 
@@ -934,9 +1008,13 @@ function AIChat({
        SEND MESSAGE
        ===================================================== */
 
-    const handleSend = async () => {
+    const handleSend = async (
+        messageOverride?: string,
+        modeOverride?: "ask" | "plan" | "edit" | "agent",
+    ) => {
         const message =
-            input.trim();
+            (messageOverride ?? input).trim();
+        const sendMode = modeOverride ?? mode;
 
         if (
             !message ||
@@ -964,9 +1042,11 @@ function AIChat({
 
         setInput("");
         setIsLoading(true);
+        let streamingMessageId: number | null = null;
+        let streamedContent = "";
 
         try {
-            if (mode === "agent") {
+            if (sendMode === "agent") {
                 if (!projectId) {
                     throw new Error("Open a project before starting an agent task.");
                 }
@@ -1000,6 +1080,16 @@ function AIChat({
                 addMessage("assistant", "Agent task started. It will prepare a plan and proposed changes for review.");
                 return;
             }
+            let activeConversationId = conversationId;
+            if (activeConversationId === null) {
+                const conversation = await createAIConversation(
+                    projectId,
+                    message.slice(0, 160),
+                );
+                activeConversationId = conversation.id;
+                setConversationId(conversation.id);
+                setConversations((previous) => [conversation, ...previous]);
+            }
             /*
              * Convert existing chat messages
              * into the format expected by
@@ -1013,16 +1103,32 @@ function AIChat({
                         content:
                             item.content,
                     }),
+                ).filter((item) =>
+                    !(item.role === "assistant" &&
+                        item.content.startsWith("Hello! I'm your AI coding assistant.")),
                 );
 
             /*
              * Send the current editor content
              * as context.
              */
+            const requestController = new AbortController();
+            generationAbortRef.current = requestController;
+            const responseMessageId = Date.now() + Math.random();
+            streamingMessageId = responseMessageId;
+            setMessages((previous) => [
+                ...previous,
+                {
+                    id: responseMessageId,
+                    role: "assistant",
+                    content: "Thinking...",
+                },
+            ]);
+
             const response =
-                await sendAIChat({
+                await streamAIChat({
                     message,
-                    mode,
+                    mode: sendMode,
                     history,
                     context: context && filePath
                         ? `CURRENT FILE: ${filePath}\nLANGUAGE: ${language ?? ""}\n\n${context}`
@@ -1045,13 +1151,27 @@ function AIChat({
                         }
                         : null,
                     project_id: projectId,
-                });
+                    conversation_id: activeConversationId,
+                }, (token) => {
+                    streamedContent += token;
+                    setMessages((previous) => previous.map((item) =>
+                        item.id === streamingMessageId
+                            ? { ...item, content: streamedContent }
+                            : item,
+                    ));
+                }, requestController.signal);
+            if (response.conversation_id) {
+                setConversationId(response.conversation_id);
+            }
+            void listAIConversations(projectId)
+                .then(setConversations)
+                .catch((error) => console.error("Unable to refresh AI conversations:", error));
 
             /*
              * Extract the first Markdown
              * code block from the response.
              */
-            const generatedCode = mode === "plan"
+            const generatedCode = sendMode === "plan"
                 ? null
                 : response.code_action?.operation === "replace"
                     ? response.code_action.new_code
@@ -1061,32 +1181,19 @@ function AIChat({
                 ? `Plan:\n${response.plan.map((step, index) => `${index + 1}. ${step}`).join("\n")}`
                 : response.message;
 
-            const messageId =
-                Date.now() +
-                Math.random();
-
             /*
              * Add AI response to chat.
              */
-            setMessages(
-                (previous) => [
-                    ...previous,
-                    {
-                        id:
-                            messageId,
-                        role:
-                            "assistant",
-                        content:
-                            responseContent,
-                        code:
-                            generatedCode ??
-                            undefined,
-                        codeAction:
-                            response.code_action ??
-                            undefined,
-                    },
-                ],
-            );
+            setMessages((previous) => previous.map((item) =>
+                item.id === streamingMessageId
+                    ? {
+                        ...item,
+                        content: responseContent,
+                        code: generatedCode ?? undefined,
+                        codeAction: response.code_action ?? undefined,
+                    }
+                    : item,
+            ));
 
             /*
              * Do not automatically modify
@@ -1113,14 +1220,39 @@ function AIChat({
                     ? error.message
                     : "Unable to connect to the AI service.";
 
-            addMessage(
-                "assistant",
-                `⚠️ ${errorMessage}`,
-            );
+            if (streamingMessageId !== null) {
+                const wasCancelled = generationAbortRef.current?.signal.aborted;
+                setMessages((previous) => previous.map((item) =>
+                    item.id === streamingMessageId
+                        ? {
+                            ...item,
+                            content: wasCancelled
+                                ? `${streamedContent}${streamedContent ? "\n\n" : ""}Generation stopped.`
+                                : `${streamedContent}${streamedContent ? "\n\n" : ""}⚠️ ${errorMessage}`,
+                        }
+                        : item,
+                ));
+            } else {
+                addMessage("assistant", `⚠️ ${errorMessage}`);
+            }
         } finally {
+            generationAbortRef.current = null;
             setIsLoading(false);
         }
     };
+
+    useImperativeHandle(ref, () => ({
+        askAboutTerminal: () => {
+            if (!terminalContext || terminalContext.success || isLoading) {
+                return;
+            }
+            setMode("ask");
+            void handleSend(
+                "Explain this terminal failure and suggest a fix. Do not modify files unless I explicitly request a code change.",
+                "ask",
+            );
+        },
+    }), [handleSend, isLoading, terminalContext]);
 
     /* =====================================================
        KEYBOARD HANDLER
@@ -1161,6 +1293,60 @@ function AIChat({
         inputRef.current?.focus();
     };
 
+    const openConversation = async (id: number) => {
+        const conversation = await getAIConversation(id);
+        setConversationId(id);
+        setMessages(conversation.messages.map((item) => ({
+            id: item.id,
+            role: item.role,
+            content: item.content,
+        })));
+        closePreview();
+    };
+
+    const startNewConversation = () => {
+        setConversationId(null);
+        setMessages([]);
+        closePreview();
+    };
+
+    const handleRenameConversation = async () => {
+        if (conversationId === null) {
+            return;
+        }
+        const current = conversations.find((item) => item.id === conversationId);
+        const title = window.prompt("Conversation name", current?.title ?? "");
+        if (!title?.trim()) {
+            return;
+        }
+        const updated = await renameAIConversation(conversationId, title.trim());
+        setConversations((previous) =>
+            previous.map((item) => item.id === updated.id ? updated : item),
+        );
+    };
+
+    const handleClearConversation = async () => {
+        if (conversationId === null || !window.confirm("Clear all messages in this conversation?")) {
+            return;
+        }
+        await clearAIConversation(conversationId);
+        setMessages([]);
+        closePreview();
+    };
+
+    const handleDeleteConversation = async () => {
+        if (conversationId === null || !window.confirm("Delete this conversation permanently?")) {
+            return;
+        }
+        await deleteAIConversation(conversationId);
+        setConversations((previous) =>
+            previous.filter((item) => item.id !== conversationId),
+        );
+        setConversationId(null);
+        setMessages([]);
+        closePreview();
+    };
+
     /* =====================================================
        RENDER
        ===================================================== */
@@ -1192,6 +1378,41 @@ function AIChat({
                             </span>
                         </div>
                     </div>
+                </div>
+
+                <div className="ai-chat__conversation-controls">
+                    <select
+                        aria-label="AI conversation"
+                        value={conversationId ?? ""}
+                        disabled={isLoading}
+                        onChange={(event) => {
+                            if (!event.target.value) {
+                                startNewConversation();
+                                return;
+                            }
+                            const id = Number(event.target.value);
+                            if (id) {
+                                void openConversation(id).catch((error) =>
+                                    addMessage("assistant", `Unable to open conversation: ${error instanceof Error ? error.message : "Request failed."}`),
+                                );
+                            }
+                        }}
+                    >
+                        <option value="">New conversation</option>
+                        {conversations.map((item) => (
+                            <option key={item.id} value={item.id}>{item.title}</option>
+                        ))}
+                    </select>
+                    <button type="button" onClick={startNewConversation} disabled={isLoading}>
+                        New
+                    </button>
+                    {conversationId !== null && (
+                        <>
+                            <button type="button" onClick={() => void handleRenameConversation()} disabled={isLoading}>Rename</button>
+                            <button type="button" onClick={() => void handleClearConversation()} disabled={isLoading}>Clear</button>
+                            <button type="button" onClick={() => void handleDeleteConversation()} disabled={isLoading}>Delete</button>
+                        </>
+                    )}
                 </div>
 
                 {/* Explain */}
@@ -1483,6 +1704,27 @@ function AIChat({
                     {hasUnsavedChanges && agentTask.actions.some((item) => item.status === "awaiting_approval") && (
                         <p className="ai-chat__agent-note">Save or discard open editor changes before applying.</p>
                     )}
+                    {agentTask.change_history.some((change) => !change.rolled_back) && (
+                        <button
+                            type="button"
+                            className="ai-chat__agent-continue"
+                            disabled={hasUnsavedChanges || ["pending", "planning", "executing", "validating"].includes(agentTask.status)}
+                            title={hasUnsavedChanges ? "Save or discard editor changes first" : "Restore files only if they have not changed since the AI action"}
+                            onClick={() => {
+                                if (!window.confirm("Undo all applied changes from this agent task?")) {
+                                    return;
+                                }
+                                void undoAgentTask(agentTask.id).then((updated) => {
+                                    setAgentTask(updated);
+                                    if (updated.changes?.length) {
+                                        onAgentChangesApplied?.(updated.changes);
+                                    }
+                                });
+                            }}
+                        >
+                            Undo AI changes
+                        </button>
+                    )}
                     {agentTask.validation_command && agentTask.actions.every((item) => item.status !== "awaiting_approval") && (
                         <div className="ai-chat__agent-validation">
                             <span className="ai-chat__agent-validation-label">Validation</span>
@@ -1507,9 +1749,13 @@ function AIChat({
                             )}
                         </div>
                     )}
-                    {agentTask.status === "failed" && agentTask.iteration < 5 && (
+                    {(agentTask.status === "failed" && agentTask.iteration < 5 || agentTask.status === "paused") && (
                         <button type="button" className="ai-chat__agent-continue" onClick={() => void continueAgentTask(agentTask.id).then(setAgentTask)}>
-                            Propose a correction
+                            {agentTask.status === "paused"
+                                ? "Reinspect and continue"
+                                : agentTask.validation_result
+                                    ? "Propose a correction"
+                                    : "Retry planning"}
                         </button>
                     )}
                     {agentTask.stop_reason && <p className="ai-chat__agent-note">{agentTask.stop_reason}</p>}
@@ -1578,42 +1824,23 @@ function AIChat({
 
                     {/* Diff */}
 
-                    <div className="ai-chat__diff">
-                        {diffLines.map(
-                            (line) => (
-                                <div
-                                    key={
-                                        line.id
-                                    }
-                                    className={`ai-chat__diff-line ai-chat__diff-line--${line.type}`}
-                                >
-                                    <span className="ai-chat__diff-old-number">
-                                        {line.oldLineNumber ??
-                                            ""}
-                                    </span>
-
-                                    <span className="ai-chat__diff-new-number">
-                                        {line.newLineNumber ??
-                                            ""}
-                                    </span>
-
-                                    <span className="ai-chat__diff-marker">
-                                        {line.type ===
-                                        "added"
-                                            ? "+"
-                                            : line.type ===
-                                              "removed"
-                                            ? "-"
-                                            : " "}
-                                    </span>
-
-                                    <code className="ai-chat__diff-content">
-                                        {line.text ||
-                                            " "}
-                                    </code>
-                                </div>
-                            ),
-                        )}
+                    <div className="ai-chat__monaco-diff" aria-label="AI change before and after">
+                        <DiffEditor
+                            height="100%"
+                            language={language ?? "plaintext"}
+                            theme="vs-dark"
+                            original={previewPatch?.old_code ?? context ?? ""}
+                            modified={previewCode}
+                            options={{
+                                automaticLayout: true,
+                                readOnly: true,
+                                originalEditable: false,
+                                renderSideBySide: true,
+                                minimap: { enabled: false },
+                                scrollBeyondLastLine: false,
+                                wordWrap: "on",
+                            }}
+                        />
                     </div>
 
                     {/* Preview actions */}
@@ -1788,17 +2015,16 @@ function AIChat({
                     <button
                         type="button"
                         className="ai-chat__send-button"
-                        onClick={() =>
-                            void handleSend()
-                        }
+                        onClick={() => isLoading
+                            ? generationAbortRef.current?.abort()
+                            : void handleSend()}
                         disabled={
-                            !input.trim() ||
-                            isLoading
+                            !isLoading && !input.trim()
                         }
-                        aria-label="Send message"
+                        aria-label={isLoading ? "Stop generation" : "Send message"}
                     >
                         {isLoading
-                            ? "…"
+                            ? "Stop"
                             : "↑"}
                     </button>
                 </div>
@@ -1850,6 +2076,6 @@ function AIChat({
             </div>
         </section>
     );
-}
+});
 
 export default AIChat;

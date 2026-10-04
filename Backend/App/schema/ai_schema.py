@@ -23,6 +23,11 @@ class AIMessage(BaseModel):
         max_length=50000,
     )
 
+    @field_validator("content")
+    @classmethod
+    def redact_message_secrets(cls, value: str) -> str:
+        return _redact_secrets(value)
+
 
 class SelectedCodeContext(BaseModel):
     file_path: str = Field(..., min_length=1, max_length=1000)
@@ -30,6 +35,11 @@ class SelectedCodeContext(BaseModel):
     code: str = Field(..., min_length=1, max_length=20000)
     start_line: int = Field(..., ge=1)
     end_line: int = Field(..., ge=1)
+
+    @field_validator("code")
+    @classmethod
+    def redact_selected_code_secrets(cls, value: str) -> str:
+        return _redact_secrets(value)
 
     @model_validator(mode="after")
     def validate_line_range(self):
@@ -39,7 +49,7 @@ class SelectedCodeContext(BaseModel):
 
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
     r"secret|password|passwd|credential|authorization|database_url)"
     r"[\"']?\s*[:=]\s*[\"']?)([^\s\"',;}\]]+)"
 )
@@ -58,14 +68,19 @@ _DATABASE_URL_PASSWORD = re.compile(
 _JWT_VALUE = re.compile(
     r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b"
 )
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
+    r"-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+)
 
 
 def _redact_secrets(value: str) -> str:
-    value = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
     value = _BEARER_VALUE.sub(r"\1[REDACTED]", value)
+    value = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
     value = _DATABASE_URL_PASSWORD.sub(r"\1[REDACTED]\2", value)
     value = _RAW_CREDENTIAL.sub("[REDACTED]", value)
-    return _JWT_VALUE.sub("[REDACTED]", value)
+    value = _JWT_VALUE.sub("[REDACTED]", value)
+    return _PRIVATE_KEY_BLOCK.sub("[REDACTED PRIVATE KEY]", value)
 
 
 class TerminalContext(BaseModel):
@@ -156,6 +171,21 @@ class AIChatRequest(BaseModel):
         "repository context."
     ),
 )
+    conversation_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Existing conversation to continue.",
+    )
+
+    @field_validator("message")
+    @classmethod
+    def redact_request_message_secrets(cls, value: str) -> str:
+        return _redact_secrets(value)
+
+    @field_validator("context")
+    @classmethod
+    def redact_request_context_secrets(cls, value: str | None) -> str | None:
+        return _redact_secrets(value) if value is not None else None
 
     @model_validator(mode="after")
     def require_project_for_editor_context(self):
@@ -179,4 +209,4 @@ class AIChatResponse(BaseModel):
     model: str
     code_action: CodeAction | None = None
     plan: list[str] | None = None
-
+    conversation_id: int | None = None

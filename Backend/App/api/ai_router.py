@@ -1,24 +1,48 @@
+import asyncio
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from App.api.terminal_router import terminal_service
 from App.auth.auth import get_current_user
-from App.config import LLM_MODEL, LLM_PROVIDER
+from App.config import (
+    AI_CONTEXT_MAX_CHARS,
+    AI_DAILY_REQUEST_LIMIT,
+    AI_DAILY_TOKEN_LIMIT,
+    AI_OUTPUT_TOKEN_RESERVATION,
+    LLM_MODEL,
+    LLM_PROVIDER,
+)
 from App.database.database import get_db
+from App.models.ai_conversation import AIConversation, AIConversationMessage
 from App.models.project import Project
+from App.models.project_file import ProjectFile
+from App.models.repository_index import RepositoryIndex
 from App.models.user import User
 from App.schema.ai_schema import (
     CodeAction,
     AIChatRequest,
     AIChatResponse,
+    TerminalContext,
 )
 from App.service.AI.ai_service import AIService
 from App.service.AI.context.repository_relevance import (
     RepositoryRelevanceService,
 )
+from App.service.AI.context.context_budget import (
+    ContextBudgetExceeded,
+    SYSTEM_PROMPT_RESERVE,
+    build_budgeted_context,
+)
+from App.service.AI.context.context_cache import project_structure_cache
 from App.service.AI.context.repository_context import (
     RepositoryContextBuilder,
 )
@@ -29,6 +53,11 @@ from App.service.AI.index.vector_rag_service import VectorRAGService
 from App.service.AI.providers.provider_factory import (
     get_llm_provider,
 )
+from App.service.AI.usage.usage_service import (
+    AIUsageService,
+    UsageLimitExceeded,
+)
+from App.service.git_service import GitCommandError, GitService
 
 
 router = APIRouter(
@@ -37,7 +66,54 @@ router = APIRouter(
 )
 
 logger = logging.getLogger(__name__)
-MAX_AI_CONTEXT_CHARS = 100000
+
+
+def _project_structure_context(
+    db: Session,
+    user_id: int,
+    project_id: int,
+) -> str:
+    if not isinstance(db, Session):
+        return RepositoryContextBuilder(
+            db=db,
+            project_id=project_id,
+            max_chars=12000,
+        ).build_tree()
+
+    file_metadata = (
+        db.query(
+            func.count(ProjectFile.id),
+            func.max(ProjectFile.updated_at),
+            func.coalesce(func.sum(ProjectFile.id), 0),
+        )
+        .filter(ProjectFile.project_id == project_id)
+        .one()
+    )
+    index_metadata = (
+        db.query(
+            func.count(RepositoryIndex.id),
+            func.max(RepositoryIndex.updated_at),
+        )
+        .filter(RepositoryIndex.project_id == project_id)
+        .one()
+    )
+    cache_key = (
+        user_id,
+        project_id,
+        file_metadata[0],
+        file_metadata[1],
+        file_metadata[2],
+        index_metadata[0],
+        index_metadata[1],
+    )
+    return project_structure_cache.get_or_create(
+        cache_key,
+        lambda: RepositoryContextBuilder(
+            db=db,
+            project_id=project_id,
+            max_chars=12000,
+        ).build_tree(),
+    )
 
 
 def _extract_code_action(message: str) -> CodeAction | None:
@@ -75,6 +151,56 @@ def _extract_plan(message: str) -> list[str] | None:
     return None
 
 
+def _requests_git_review(message: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:review|summarize|explain)\b.{0,100}\b(?:changes|diff)\b",
+            message,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
+def _persist_user_message(
+    db: Session,
+    request: AIChatRequest,
+    conversation: AIConversation,
+) -> None:
+    db.add(
+        AIConversationMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=request.message,
+            message_metadata={"mode": request.mode},
+        )
+    )
+
+    conversation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+
+def _persist_assistant_message(
+    db: Session,
+    response: AIChatResponse,
+    conversation: AIConversation,
+) -> int:
+    db.add(
+        AIConversationMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=response.message,
+            message_metadata={
+                "provider": response.provider,
+                "model": response.model,
+            },
+        )
+    )
+    conversation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    response.conversation_id = conversation.id
+    return conversation.id
+
+
 # =========================================================
 # AI SERVICE
 # =========================================================
@@ -85,21 +211,18 @@ try:
     )
 except Exception as exc:
     ai_service = None
-    provider_error = str(exc)
+    logger.warning("AI provider initialization failed (%s).", type(exc).__name__)
 
 
 # =========================================================
 # AI CHAT
 # =========================================================
 
-@router.post(
-    "/chat",
-    response_model=AIChatResponse,
-)
-async def chat(
+async def _chat(
     request: AIChatRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: Session,
+    current_user: User,
+    streaming: bool = False,
 ):
     """
     Send a message to the AI coding assistant.
@@ -112,11 +235,22 @@ async def chat(
     if ai_service is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "AI provider unavailable: "
-                f"{provider_error}"
-            ),
+            detail="AI provider is not configured.",
         )
+
+    usage_service = (
+        AIUsageService(
+            db=db,
+            request_limit=AI_DAILY_REQUEST_LIMIT,
+            token_limit=AI_DAILY_TOKEN_LIMIT,
+            output_reservation=AI_OUTPUT_TOKEN_RESERVATION,
+        )
+        if isinstance(db, Session)
+        else None
+    )
+    usage_id = None
+    input_token_count = 0
+    usage_completed = False
 
     try:
 
@@ -131,12 +265,65 @@ async def chat(
             }
             for item in request.history
         ]
+        conversation = None
+        if request.conversation_id is not None:
+            conversation = (
+                db.query(AIConversation)
+                .filter(
+                    AIConversation.id == request.conversation_id,
+                    AIConversation.user_id == current_user.id,
+                )
+                .first()
+            )
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+            if (
+                request.project_id is not None
+                and conversation.project_id != request.project_id
+            ):
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+            if conversation.project_id is not None:
+                owned_project = (
+                    db.query(Project.id)
+                    .filter(
+                        Project.id == conversation.project_id,
+                        Project.user_id == current_user.id,
+                    )
+                    .first()
+                )
+                if owned_project is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Conversation not found.",
+                    )
+                project_id = conversation.project_id
+            else:
+                project_id = None
+            stored_messages = (
+                db.query(AIConversationMessage)
+                .filter(
+                    AIConversationMessage.conversation_id == conversation.id,
+                    AIConversationMessage.role.in_(("user", "assistant")),
+                )
+                .order_by(
+                    AIConversationMessage.created_at.desc(),
+                    AIConversationMessage.id.desc(),
+                )
+                .limit(50)
+                .all()
+            )
+            history = [
+                {"role": item.role, "content": item.content}
+                for item in reversed(stored_messages)
+            ]
+        else:
+            project_id = request.project_id
 
         # =====================================================
         # REPOSITORY CONTEXT
         # =====================================================
 
-        context = request.context
+        repository_context = None
         terminal_context_block = None
         selected_context_block = None
 
@@ -163,12 +350,6 @@ async def chat(
                 f"```{selection.language}\n{selection.code}\n```"
             )
 
-        project_id = getattr(
-            request,
-            "project_id",
-            None,
-        )
-
         if project_id is not None:
 
             project = (
@@ -185,11 +366,11 @@ async def chat(
                     detail="Project not found",
                 )
 
-            project_structure = RepositoryContextBuilder(
+            project_structure = _project_structure_context(
                 db=db,
+                user_id=current_user.id,
                 project_id=project_id,
-                max_chars=12000,
-            ).build_tree()
+            )
 
             relevance_service = (
                 RepositoryRelevanceService(
@@ -249,56 +430,52 @@ async def chat(
                     type(exc).__name__,
                 )
 
+            git_review_context = None
+            if _requests_git_review(request.message):
+                try:
+                    git_service = GitService(
+                        terminal_service.validate_project_directory(project_id)
+                    )
+                    git_status = git_service.status()
+                    working_diff = git_service.diff()["diff"]
+                    staged_diff = git_service.diff(staged=True)["diff"]
+                    safe_diff = TerminalContext(
+                        command="git diff",
+                        exit_code=0,
+                        stdout=(
+                            f"WORKING TREE DIFF:\n{working_diff[:12000]}\n"
+                            f"STAGED DIFF:\n{staged_diff[:12000]}"
+                        ),
+                        success=True,
+                    ).stdout
+                    git_review_context = (
+                        "GIT WORKING TREE\n"
+                        f"BRANCH: {git_status['branch']}\n"
+                        "CHANGED FILES:\n"
+                        f"{json.dumps(git_status['changed_files'], ensure_ascii=False)}\n"
+                        "DIFF (secrets filtered):\n"
+                        f"{safe_diff}"
+                    )
+                except (GitCommandError, OSError) as exc:
+                    logger.info(
+                        "Git context unavailable for project %s (%s).",
+                        project_id,
+                        type(exc).__name__,
+                    )
+
             repository_context = "\n\n".join(
                 part
                 for part in (
                     project_structure,
                     repository_context,
+                    git_review_context,
                 )
                 if part
             )
 
-            if terminal_context_block or selected_context_block:
-                prioritized_context = []
-                if terminal_context_block:
-                    if repository_context:
-                        prioritized_context.append(
-                            f"REPOSITORY CONTEXT\n\n{repository_context}"
-                        )
-                    prioritized_context.append(terminal_context_block)
-                    if selected_context_block:
-                        prioritized_context.append(selected_context_block)
-                else:
-                    if selected_context_block:
-                        prioritized_context.append(selected_context_block)
-                    if repository_context:
-                        prioritized_context.append(
-                            f"REPOSITORY CONTEXT\n\n{repository_context}"
-                        )
-                if request.context:
-                    prioritized_context.append(
-                        f"CURRENT FILE CONTEXT\n\n{request.context}"
-                    )
-                context = "\n\n".join(prioritized_context) or None
-            elif repository_context:
-                context = (
-                    "CURRENT IDE CONTEXT\n\n"
-                    f"{context}\n\n"
-                    "REPOSITORY CONTEXT\n\n"
-                    f"{repository_context}"
-                    if context
-                    else repository_context
-                )
-
         # =====================================================
         # AI REQUEST
         # =====================================================
-
-        if context and len(context) > MAX_AI_CONTEXT_CHARS:
-            logger.warning(
-                "AI context exceeded the request limit and was truncated."
-            )
-            context = context[:MAX_AI_CONTEXT_CHARS]
 
         mode_instructions = {
             "plan": (
@@ -321,13 +498,192 @@ async def chat(
                 f"USER TASK:\n{request.message}"
             )
 
+        context_parts = [
+            ("selected", selected_context_block),
+            ("repository", repository_context),
+            ("current_file", request.context),
+        ]
+        if terminal_context_block:
+            context_parts = [
+                ("repository", repository_context),
+                ("terminal", terminal_context_block),
+                ("selected", selected_context_block),
+                ("current_file", request.context),
+            ]
+        try:
+            context, history = build_budgeted_context(
+                message=message,
+                history=history,
+                context_parts=context_parts,
+                max_prompt_chars=AI_CONTEXT_MAX_CHARS,
+            )
+        except ContextBudgetExceeded as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+        if usage_service is not None:
+            input_token_count = usage_service.estimate_tokens(
+                " " * SYSTEM_PROMPT_RESERVE
+                + message
+                + (context or "")
+                + "".join(item["content"] for item in history)
+            )
+            try:
+                usage_id = usage_service.start_request(
+                    user_id=current_user.id,
+                    project_id=project_id,
+                    conversation_id=request.conversation_id,
+                    provider=LLM_PROVIDER,
+                    model=LLM_MODEL,
+                    estimated_input_tokens=input_token_count,
+                )
+            except UsageLimitExceeded as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail=str(exc),
+                ) from exc
+
+        if request.conversation_id is not None:
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+            _persist_user_message(db, request, conversation)
+
+        if streaming:
+            async def events() -> AsyncIterator[str]:
+                nonlocal usage_completed
+                collected: list[str] = []
+                try:
+                    async for chunk in ai_service.stream(
+                        message=message,
+                        context=context,
+                        history=history,
+                    ):
+                        collected.append(chunk)
+                        yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+                    response_text = "".join(collected)
+                    if usage_service is not None and usage_id is not None:
+                        usage_service.finish_request(
+                            usage_id,
+                            input_tokens=input_token_count,
+                            output_tokens=usage_service.estimate_tokens(
+                                response_text
+                            ),
+                            request_status="succeeded",
+                        )
+                    usage_completed = True
+                    final_response = AIChatResponse(
+                        message=response_text,
+                        provider=LLM_PROVIDER,
+                        model=LLM_MODEL,
+                        code_action=(
+                            _extract_code_action(response_text)
+                            if request.mode != "plan"
+                            else None
+                        ),
+                        plan=(
+                            _extract_plan(response_text)
+                            if request.mode == "plan"
+                            else None
+                        ),
+                    )
+                    if request.conversation_id is not None:
+                        _persist_assistant_message(
+                            db,
+                            final_response,
+                            conversation,
+                        )
+                    yield (
+                        "data: "
+                        f"{json.dumps({'type': 'done', 'response': final_response.model_dump()})}\n\n"
+                    )
+                except SQLAlchemyError as exc:
+                    db.rollback()
+                    if (
+                        usage_service is not None
+                        and usage_id is not None
+                        and not usage_completed
+                    ):
+                        usage_service.finish_request(
+                            usage_id,
+                            input_tokens=input_token_count,
+                            output_tokens=usage_service.estimate_tokens(
+                                "".join(collected)
+                            ),
+                            request_status="failed",
+                            error_status="persistence_error",
+                        )
+                    logger.warning(
+                        "AI conversation persistence failed (%s).",
+                        type(exc).__name__,
+                    )
+                    yield (
+                        "data: "
+                        f"{json.dumps({'type': 'error', 'detail': 'Unable to save the conversation. Please try again.'})}\n\n"
+                    )
+                except asyncio.CancelledError:
+                    if (
+                        usage_service is not None
+                        and usage_id is not None
+                        and not usage_completed
+                    ):
+                        usage_service.finish_request(
+                            usage_id,
+                            input_tokens=input_token_count,
+                            output_tokens=usage_service.estimate_tokens(
+                                "".join(collected)
+                            ),
+                            request_status="cancelled",
+                            error_status="client_cancelled",
+                        )
+                    raise
+                except Exception as exc:
+                    if (
+                        usage_service is not None
+                        and usage_id is not None
+                        and not usage_completed
+                    ):
+                        usage_service.finish_request(
+                            usage_id,
+                            input_tokens=input_token_count,
+                            output_tokens=usage_service.estimate_tokens(
+                                "".join(collected)
+                            ),
+                            request_status="failed",
+                            error_status=_usage_error_status(exc),
+                        )
+                    logger.warning(
+                        "AI streaming request failed (%s).",
+                        type(exc).__name__,
+                    )
+                    yield (
+                        "data: "
+                        f"{json.dumps({'type': 'error', 'detail': 'AI provider is temporarily unavailable. Try again.'})}\n\n"
+                    )
+
+            return StreamingResponse(
+                events(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         response = await ai_service.chat(
             message=message,
             context=context,
             history=history,
         )
+        if usage_service is not None and usage_id is not None:
+            usage_service.finish_request(
+                usage_id,
+                input_tokens=input_token_count,
+                output_tokens=usage_service.estimate_tokens(response),
+                request_status="succeeded",
+            )
+            usage_completed = True
 
-        return AIChatResponse(
+        chat_response = AIChatResponse(
             message=response,
             provider=LLM_PROVIDER,
             model=LLM_MODEL,
@@ -338,15 +694,75 @@ async def chat(
             ),
             plan=_extract_plan(response) if request.mode == "plan" else None,
         )
+        if request.conversation_id is not None:
+            _persist_assistant_message(
+                db,
+                chat_response,
+                conversation,
+            )
+        return chat_response
 
     except HTTPException:
         raise
 
+    except SQLAlchemyError as exc:
+        db.rollback()
+        if usage_service is not None and usage_id is not None and not usage_completed:
+            usage_service.finish_request(
+                usage_id,
+                input_tokens=input_token_count,
+                output_tokens=0,
+                request_status="failed",
+                error_status="persistence_error",
+            )
+        logger.warning("AI conversation persistence failed (%s).", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to save the conversation. Please try again.",
+        ) from exc
+
     except Exception as exc:
+        if usage_service is not None and usage_id is not None and not usage_completed:
+            usage_service.finish_request(
+                usage_id,
+                input_tokens=input_token_count,
+                output_tokens=0,
+                request_status="failed",
+                error_status=_usage_error_status(exc),
+            )
+        logger.warning("AI provider request failed (%s).", type(exc).__name__)
         raise HTTPException(
             status_code=502,
-            detail=(
-                "AI provider request failed: "
-                f"{str(exc)}"
-            ),
+            detail="AI provider is temporarily unavailable. Try again.",
         ) from exc
+
+
+def _usage_error_status(error: Exception) -> str:
+        status_code = getattr(error, "status_code", None)
+        if isinstance(error, (TimeoutError,)):
+            return "provider_timeout"
+        if status_code in (401, 403):
+            return "provider_authentication"
+        if isinstance(status_code, int) and status_code >= 500:
+            return "provider_server_error"
+        if isinstance(status_code, int) and status_code == 429:
+            return "provider_rate_limited"
+        return "provider_error"
+
+
+@router.post("/chat", response_model=AIChatResponse)
+async def chat(
+    request: AIChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await _chat(request, db, current_user)
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    request: AIChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await _chat(request, db, current_user, streaming=True)

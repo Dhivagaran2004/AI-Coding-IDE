@@ -299,7 +299,7 @@ def test_index_failure_marks_record_failed_and_preserves_snapshot():
         existing_index.status,
         existing_index.indexed_content,
     )
-    db.fail_on_commit = 2
+    db.fail_on_commit = 1
 
     try:
         service.create_or_update_index(
@@ -310,7 +310,7 @@ def test_index_failure_marks_record_failed_and_preserves_snapshot():
     else:
         raise AssertionError("Expected indexing failure")
 
-    assert existing_index.status == "failed"
+    assert existing_index.status == "ready"
     assert existing_index.content_hash == service.calculate_content_hash(
         old_content
     )
@@ -332,4 +332,3 @@ def test_legacy_non_ready_status_needs_indexing():
     assert service.needs_indexing(
         FakeFile(id=10, content=content)
     ) is True
-

@@ -53,6 +53,11 @@ class RepositoryIndex(Base):
         default="pending",
     )
 
+    error_message = Column(
+        String(500),
+        nullable=True,
+    )
+
     indexed_content = Column(
         Text,
         nullable=True,

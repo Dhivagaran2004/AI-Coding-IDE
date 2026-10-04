@@ -217,6 +217,10 @@ class VectorRAGService:
             if cast(int, row.file_id) in current_files
             and cast(str, row.content_hash)
             == current_files[cast(int, row.file_id)]
+            and CodeChunker.is_indexable_path(cast(str, row.file_path))
+            and not CodeChunker.contains_sensitive_content(
+                cast(str, row.content)
+            )
         ]
         if not current_rows:
             return VectorSearchResult(True, [], "")

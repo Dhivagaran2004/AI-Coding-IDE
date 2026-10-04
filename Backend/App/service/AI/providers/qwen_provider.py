@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 from openai import AsyncOpenAI
 
 from App.service.AI.providers.base_provider import BaseLLMProvider
@@ -90,3 +92,50 @@ class QwenProvider(BaseLLMProvider):
         )
 
         return response.choices[0].message.content or ""
+
+    async def generate_stream(
+        self,
+        message: str,
+        context: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[str]:
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI coding assistant inside a developer IDE. "
+                    "Help the user write, understand, debug, refactor, and improve code. "
+                    "When the user asks you to generate code, provide a clear and complete "
+                    "solution. Use Markdown code blocks when appropriate. Do not invent "
+                    "files or project information that is not present in the provided "
+                    "context. When the user explicitly requests a change to an existing "
+                    "file, include one fenced JSON code action with type code_change, "
+                    "operation replace, file_path, 1-based start_line and end_line, "
+                    "old_code copied exactly from context, new_code, and description. "
+                    "Do not emit an action if exact old_code or its line range is "
+                    "uncertain. Never apply changes; the user must approve them."
+                ),
+            }
+        ]
+        if history:
+            messages.extend(history)
+
+        user_message = message
+        if context:
+            user_message = (
+                f"Code or IDE context:\n{context}\n\nUser request:\n{message}"
+            )
+        messages.append({"role": "user", "content": user_message})
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.2,
+            stream=True,
+        )
+        async for event in response:
+            if not event.choices:
+                continue
+            content = event.choices[0].delta.content
+            if isinstance(content, str) and content:
+                yield content

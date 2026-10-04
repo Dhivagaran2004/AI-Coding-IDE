@@ -104,6 +104,42 @@
     background: #4ec9b0;
 }
 
+.ai-chat__conversation-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.ai-chat__conversation-controls select,
+.ai-chat__conversation-controls button {
+    height: 28px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: #1e1e1e;
+    color: #cccccc;
+    font-size: 11px;
+}
+
+.ai-chat__conversation-controls select {
+    width: 150px;
+    padding: 0 6px;
+}
+
+.ai-chat__conversation-controls button {
+    padding: 0 7px;
+    cursor: pointer;
+}
+
+.ai-chat__conversation-controls button:hover:not(:disabled) {
+    background: #333333;
+}
+
+.ai-chat__conversation-controls button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
 .ai-chat__meta-row {
     display: flex;
     flex-wrap: wrap;
@@ -234,6 +270,13 @@
     max-height: 42%;
     padding: 10px 12px;
     overflow: auto;
+}
+
+.ai-chat__monaco-diff {
+    height: min(42vh, 360px);
+    min-height: 180px;
+    border: 1px solid var(--border-color, #30343b);
+    overflow: hidden;
     border-top: 1px solid #333333;
     background: #202124;
     color: #cccccc;

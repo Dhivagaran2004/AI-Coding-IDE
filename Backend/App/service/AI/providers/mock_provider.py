@@ -11,6 +11,7 @@ class MockLLMProvider(BaseLLMProvider):
         self,
         message: str,
         context: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> str:
         return (
             "Mock AI response: "

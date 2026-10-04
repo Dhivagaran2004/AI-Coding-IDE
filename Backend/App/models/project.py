@@ -50,3 +50,8 @@ class Project(Base):
         back_populates="project",
         cascade="all, delete-orphan"
     )
+
+    ai_conversations = relationship(
+        "AIConversation",
+        cascade="all, delete-orphan",
+    )

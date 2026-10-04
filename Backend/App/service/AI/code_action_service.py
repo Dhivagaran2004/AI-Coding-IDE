@@ -9,6 +9,8 @@ from App.service.AI.index.repository_index_service import (
     RepositoryIndexService,
 )
 
+MAX_RESULTING_FILE_CHARS = 1000000
+
 
 class PatchNotFoundError(Exception):
     pass
@@ -41,7 +43,7 @@ class PatchAction(Protocol):
 
 
 class CodeActionService:
-    MAX_RESULTING_FILE_CHARS = 1000000
+    MAX_RESULTING_FILE_CHARS = MAX_RESULTING_FILE_CHARS
 
     def __init__(
         self,

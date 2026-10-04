@@ -1,5 +1,5 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TerminalCommandRequest(BaseModel):
-    command: str    
+    command: str = Field(..., max_length=2000)

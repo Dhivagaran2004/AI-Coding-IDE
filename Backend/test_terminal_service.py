@@ -18,7 +18,7 @@ def test_project_directory_creation(tmp_path):
     assert project_directory.is_dir()
 
 
-def test_execute_python_command(tmp_path):
+def test_execute_workspace_read_command(tmp_path):
 
     service = TerminalService(
         workspace_root=str(tmp_path)
@@ -28,16 +28,16 @@ def test_execute_python_command(tmp_path):
         project_id=1
     )
 
-    main_file = project_directory / "main.py"
+    sample_file = project_directory / "sample.txt"
 
-    main_file.write_text(
-        'print("Hello from terminal")',
+    sample_file.write_text(
+        "Hello from terminal",
         encoding="utf-8"
     )
 
     result = service.execute_command(
         project_id=1,
-        command="python main.py"
+        command="cat sample.txt"
     )
 
     assert isinstance(result, TerminalResult)
@@ -56,7 +56,7 @@ def test_failed_command(tmp_path):
 
     result = service.execute_command(
         project_id=1,
-        command="python -c \"print(undefined_variable)\""
+        command="cat missing.txt"
     )
 
     assert isinstance(result, TerminalResult)

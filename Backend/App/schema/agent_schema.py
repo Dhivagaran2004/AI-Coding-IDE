@@ -28,7 +28,7 @@ class AgentCommandApproval(BaseModel):
 
 class AgentAction(BaseModel):
     action: CodeAction
-    status: Literal["awaiting_approval", "applied", "rejected", "failed"]
+    status: Literal["awaiting_approval", "applied", "reverted", "rejected", "failed"]
     error: str | None = None
 
 
@@ -49,6 +49,7 @@ class AgentTaskResponse(BaseModel):
         "awaiting_approval",
         "executing",
         "validating",
+        "paused",
         "failed",
         "completed",
         "cancelled",

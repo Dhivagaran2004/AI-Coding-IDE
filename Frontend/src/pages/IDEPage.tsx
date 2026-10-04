@@ -43,9 +43,10 @@ import type {
     ProjectFileCreate,
 } from "../types/file";
 
-import AIChat from "../components/ai/AIChat";
+import AIChat, { type AIChatHandle } from "../components/ai/AIChat";
 import type { TerminalAIContext } from "../services/terminalService";
 import type { CodeAction } from "../services/aiService";
+import { getGitDiff, getGitStatus, type GitStatus } from "../services/gitService";
 
 // =========================================
 // Editor Tab Type
@@ -102,6 +103,11 @@ export default function IDEPage() {
 
     const [terminalContext, setTerminalContext] =
         useState<TerminalAIContext | null>(null);
+    const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+    const [gitDiff, setGitDiff] = useState<string | null>(null);
+    const [gitDiffStaged, setGitDiffStaged] = useState(false);
+    const [gitDiffTruncated, setGitDiffTruncated] = useState(false);
+    const [gitError, setGitError] = useState("");
 
     useEffect(() => {
         setSelectedCode(null);
@@ -246,6 +252,45 @@ export default function IDEPage() {
 
     const numericProjectId =
         projectId ? Number(projectId) : 0;
+    const aiChatRef = useRef<AIChatHandle | null>(null);
+
+    useEffect(() => {
+        let active = true;
+        const refreshStatus = () => {
+            void getGitStatus(numericProjectId)
+                .then((status) => {
+                    if (active) {
+                        setGitStatus(status);
+                        setGitError("");
+                    }
+                })
+                .catch(() => {
+                    if (active) {
+                        setGitStatus(null);
+                        setGitError("Git status unavailable");
+                    }
+                });
+        };
+        refreshStatus();
+        const interval = window.setInterval(refreshStatus, 10000);
+        return () => {
+            active = false;
+            window.clearInterval(interval);
+        };
+    }, [numericProjectId]);
+
+    const openGitDiff = async (staged: boolean) => {
+        try {
+            const result = await getGitDiff(numericProjectId, staged);
+            setGitDiff(result.diff);
+            setGitDiffTruncated(result.truncated);
+            setGitDiffStaged(staged);
+        } catch {
+            setGitDiff("Unable to load Git diff.");
+            setGitDiffTruncated(false);
+            setGitDiffStaged(staged);
+        }
+    };
 
 
     // =========================================
@@ -1456,12 +1501,75 @@ export default function IDEPage() {
 
 
                 <div className="ide-project-info">
-
                     Project #{projectId}
-
+                    <button
+                        type="button"
+                        className="ide-git-status"
+                        onClick={() => {
+                            setGitDiff("");
+                            void openGitDiff(false);
+                        }}
+                        title={gitError || "Open read-only Git status and diff"}
+                    >
+                        Git {gitStatus?.branch || "—"} · {gitStatus?.changed_files.length ?? "…"}
+                    </button>
                 </div>
 
             </header>
+
+            {gitDiff !== null && (
+                <div
+                    className="ide-git-overlay"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setGitDiff(null);
+                        }
+                    }}
+                >
+                    <section
+                        className="ide-git-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Git status and diff"
+                    >
+                        <header className="ide-git-dialog__header">
+                            <div>
+                                <strong>Git changes</strong>
+                                <span>{gitStatus?.branch || "Branch unavailable"}</span>
+                            </div>
+                            <button type="button" onClick={() => setGitDiff(null)} aria-label="Close Git diff">×</button>
+                        </header>
+                        <div className="ide-git-dialog__files">
+                            {gitStatus?.changed_files.map((file) => (
+                                <div key={file.path}>
+                                    <code>{file.path}</code>
+                                    <span>{file.status}</span>
+                                </div>
+                            ))}
+                            {!gitStatus && <span>{gitError || "Loading Git status..."}</span>}
+                        </div>
+                        <div className="ide-git-dialog__tabs">
+                            <button
+                                type="button"
+                                className={!gitDiffStaged ? "is-active" : ""}
+                                onClick={() => void openGitDiff(false)}
+                            >
+                                Working tree
+                            </button>
+                            <button
+                                type="button"
+                                className={gitDiffStaged ? "is-active" : ""}
+                                onClick={() => void openGitDiff(true)}
+                            >
+                                Staged
+                            </button>
+                        </div>
+                        {gitDiffTruncated && <p className="ide-git-dialog__notice">Diff truncated to keep the IDE responsive.</p>}
+                        <pre className="ide-git-dialog__diff">{gitDiff || "No diff available."}</pre>
+                    </section>
+                </div>
+            )}
 
 
             {/* ================================= */}
@@ -1863,6 +1971,7 @@ export default function IDEPage() {
                                     numericProjectId
                                 }
                                 onResultChange={setTerminalContext}
+                                onAskAI={() => aiChatRef.current?.askAboutTerminal()}
                             />
 
                         </section>
@@ -1908,6 +2017,7 @@ export default function IDEPage() {
                         }}
                     >
                         <AIChat
+                            ref={aiChatRef}
                             projectId={numericProjectId}
                             hasUnsavedChanges={tabs.some((tab) => tab.isDirty)}
                             onAgentChangesApplied={(changes) => {

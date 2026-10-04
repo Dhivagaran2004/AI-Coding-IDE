@@ -5,7 +5,6 @@ import {
 
 import {
     executeTerminalCommand,
-    stopTerminalCommand,
     type TerminalAIContext,
 } from "../../services/terminalService";
 
@@ -17,6 +16,7 @@ import {
 interface TerminalProps {
     projectId: number;
     onResultChange?: (result: TerminalAIContext | null) => void;
+    onAskAI?: () => void;
 }
 
 
@@ -97,6 +97,7 @@ function getErrorMessage(
 export default function Terminal({
     projectId,
     onResultChange,
+    onAskAI,
 }: TerminalProps) {
 
     // =========================================
@@ -118,9 +119,17 @@ export default function Terminal({
         setOutput,
     ] = useState<string[]>([
         "AI Coding IDE Terminal",
+        'Type "help" for safe workspace commands.',
         "",
     ]);
 
+    const [latestResult, setLatestResult] =
+        useState<TerminalAIContext | null>(null);
+
+    function publishResult(result: TerminalAIContext | null) {
+        setLatestResult(result);
+        onResultChange?.(result);
+    }
 
     // =========================================
     // Command History
@@ -150,78 +159,6 @@ export default function Terminal({
         isRunning,
         setIsRunning,
     ] = useState(false);
-
-
-    // =========================================
-    // Stop Running Process
-    // =========================================
-
-    async function handleStopCommand() {
-
-        if (!isRunning) {
-
-            return;
-        }
-
-
-        try {
-
-            console.log(
-                "Stopping terminal command:",
-                projectId
-            );
-
-
-            const result =
-                await stopTerminalCommand(
-                    projectId
-                );
-
-
-            console.log(
-                "Terminal stop response:",
-                result
-            );
-
-
-            setOutput(
-                current => [
-                    ...current,
-                    "",
-                    "Process stopped.",
-                    "",
-                ]
-            );
-
-
-        } catch (error: any) {
-
-            console.error(
-                "Failed to stop terminal command:",
-                error
-            );
-
-
-            const message =
-                getErrorMessage(
-                    error,
-                    "Failed to stop command."
-                );
-
-
-            setOutput(
-                current => [
-                    ...current,
-                    `Error stopping process: ${message}`,
-                ]
-            );
-
-
-        } finally {
-
-            setIsRunning(false);
-        }
-    }
 
 
     // =========================================
@@ -303,18 +240,10 @@ export default function Terminal({
         // Start loading
 
         setIsRunning(true);
+        publishResult(null);
 
 
         try {
-
-            console.log(
-                "Executing terminal command:",
-                {
-                    projectId,
-                    command: trimmedCommand,
-                }
-            );
-
 
             const result =
                 await executeTerminalCommand(
@@ -322,16 +251,10 @@ export default function Terminal({
                     trimmedCommand
                 );
 
-            onResultChange?.({
+            publishResult({
                 ...result,
                 command: trimmedCommand,
             });
-
-
-            console.log(
-                "Terminal response:",
-                result
-            );
 
 
             // =====================================
@@ -400,19 +323,13 @@ export default function Terminal({
 
         } catch (error: any) {
 
-            console.error(
-                "Terminal command failed:",
-                error
-            );
-
-
             const message =
                 getErrorMessage(
                     error,
                     "Failed to execute command."
                 );
 
-            onResultChange?.({
+            publishResult({
                 command: trimmedCommand,
                 exit_code: 1,
                 stdout: "",
@@ -569,7 +486,7 @@ export default function Terminal({
 
     function handleClear() {
 
-        onResultChange?.(null);
+        publishResult(null);
 
         setOutput([
             "AI Coding IDE Terminal",
@@ -608,19 +525,16 @@ export default function Terminal({
 
                 <div className="terminal-actions">
 
-                    {isRunning && (
-
+                    {latestResult && !latestResult.success && onAskAI && (
                         <button
                             type="button"
-                            onClick={
-                                handleStopCommand
-                            }
+                            onClick={onAskAI}
+                            disabled={isRunning}
+                            aria-label="Ask AI about the terminal error"
                         >
-                            Stop
+                            Ask AI
                         </button>
-
                     )}
-
 
                     <button
                         type="button"

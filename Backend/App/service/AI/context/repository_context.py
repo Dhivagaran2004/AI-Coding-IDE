@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from App.models.project_file import ProjectFile
+from App.service.AI.index.code_chunker import CodeChunker
 
 
 @dataclass
@@ -197,6 +198,8 @@ class RepositoryContextBuilder:
                 return False
 
         if not project_file.content:
+            return False
+        if CodeChunker.contains_sensitive_content(project_file.content):
             return False
 
         return True

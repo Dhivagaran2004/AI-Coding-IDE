@@ -1,193 +1,41 @@
-import re
+import shlex
 
 
-# =========================================
-# Blocked Command Patterns
-# =========================================
-
-BLOCKED_PATTERNS = [
-
-    # Windows shutdown / restart
-    r"^\s*shutdown\b",
-    r"^\s*restart-computer\b",
-
-    # Disk formatting / destructive disk commands
-    r"^\s*format\b",
-    r"^\s*diskpart\b",
-
-    # Windows registry modification
-    r"^\s*reg\s+(add|delete|import|save)\b",
-
-    # Service manipulation
-    r"^\s*sc\s+(delete|stop|config)\b",
-
-    # PowerShell encoded commands
-    r"-encodedcommand\b",
-
-    # Common destructive Unix commands
-    r"^\s*mkfs\b",
-    r"^\s*dd\s+.*of=/dev/",
-
-]
+SAFE_TERMINAL_COMMANDS = {
+    "help",
+    "pwd",
+    "ls",
+    "dir",
+    "cat",
+    "type",
+    "head",
+    "tail",
+}
+_SHELL_OPERATORS = frozenset("|&;<>\n\r`$")
 
 
-# =========================================
-# Dangerous Recursive Delete
-# =========================================
-
-DANGEROUS_DELETE_PATTERNS = [
-
-    r"rm\s+-rf\s+/",
-    r"rm\s+-fr\s+/",
-    r"del\s+/s\s+/q\s+[a-zA-Z]:\\",
-    r"rmdir\s+/s\s+/q\s+[a-zA-Z]:\\",
-
-]
-
-
-# =========================================
-# Validate Command
-# =========================================
-
-def validate_terminal_command(
-    command: str
-) -> None:
-
+def parse_terminal_command(command: str) -> list[str]:
     if not command or not command.strip():
+        raise ValueError("Command cannot be empty.")
+    if len(command) > 2000:
+        raise ValueError("Command exceeds the 2000 character limit.")
+    if any(operator in command for operator in _SHELL_OPERATORS):
+        raise ValueError("Shell operators and command chaining are not allowed.")
 
+    try:
+        arguments = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise ValueError("Command contains invalid quoting.") from error
+
+    if not arguments:
+        raise ValueError("Command cannot be empty.")
+    if arguments[0].lower() not in SAFE_TERMINAL_COMMANDS:
+        allowed = ", ".join(sorted(SAFE_TERMINAL_COMMANDS))
         raise ValueError(
-            "Command cannot be empty."
+            f"Command is not allowlisted. Supported commands: {allowed}."
         )
+    return arguments
 
 
-    normalized_command = command.strip().lower()
-import re
-
-
-# =========================================
-# Blocked Command Patterns
-# =========================================
-
-BLOCKED_PATTERNS = [
-
-    # Windows shutdown / restart
-    r"^\s*shutdown\b",
-    r"^\s*restart-computer\b",
-
-    # Disk formatting / destructive disk commands
-    r"^\s*format\b",
-    r"^\s*diskpart\b",
-
-    # Windows registry modification
-    r"^\s*reg\s+(add|delete|import|save)\b",
-
-    # Service manipulation
-    r"^\s*sc\s+(delete|stop|config)\b",
-
-    # PowerShell encoded commands
-    r"-encodedcommand\b",
-
-    # Common destructive Unix commands
-    r"^\s*mkfs\b",
-    r"^\s*dd\s+.*of=/dev/",
-
-]
-
-
-# =========================================
-# Dangerous Recursive Delete
-# =========================================
-
-DANGEROUS_DELETE_PATTERNS = [
-
-    r"rm\s+-rf\s+/",
-    r"rm\s+-fr\s+/",
-    r"del\s+/s\s+/q\s+[a-zA-Z]:\\",
-    r"rmdir\s+/s\s+/q\s+[a-zA-Z]:\\",
-
-]
-
-
-# =========================================
-# Validate Command
-# =========================================
-
-def validate_terminal_command(
-    command: str
-) -> None:
-
-    if not command or not command.strip():
-
-        raise ValueError(
-            "Command cannot be empty."
-        )
-
-
-    normalized_command = command.strip().lower()
-
-
-    # =====================================
-    # Block dangerous patterns
-    # =====================================
-
-    for pattern in BLOCKED_PATTERNS:
-
-        if re.search(
-            pattern,
-            normalized_command,
-            re.IGNORECASE
-        ):
-
-            raise ValueError(
-                "This command is not allowed."
-            )
-
-
-    # =====================================
-    # Block destructive recursive deletes
-    # =====================================
-
-    for pattern in DANGEROUS_DELETE_PATTERNS:
-
-        if re.search(
-            pattern,
-            normalized_command,
-            re.IGNORECASE
-        ):
-
-            raise ValueError(
-                "Destructive recursive delete commands are not allowed."
-            )
-
-    # =====================================
-    # Block dangerous patterns
-    # =====================================
-
-    for pattern in BLOCKED_PATTERNS:
-
-        if re.search(
-            pattern,
-            normalized_command,
-            re.IGNORECASE
-        ):
-
-            raise ValueError(
-                "This command is not allowed."
-            )
-
-
-    # =====================================
-    # Block destructive recursive deletes
-    # =====================================
-
-    for pattern in DANGEROUS_DELETE_PATTERNS:
-
-        if re.search(
-            pattern,
-            normalized_command,
-            re.IGNORECASE
-        ):
-
-            raise ValueError(
-                "Destructive recursive delete commands are not allowed."
-            )
+def validate_terminal_command(command: str) -> None:
+    parse_terminal_command(command)

@@ -4,6 +4,7 @@ import hashlib
 from sqlalchemy.orm import Session
 
 from App.models.repository_index import RepositoryIndex
+from App.service.AI.index.code_chunker import CodeChunker
 from App.service.AI.search.file_search import FileSearchResult
 
 
@@ -87,6 +88,11 @@ class IndexedContextService:
 
             index = indexes.get(candidate.file_id)
             if index is None or not index.indexed_content:
+                continue
+            if (
+                not CodeChunker.is_indexable_path(candidate.path)
+                or CodeChunker.contains_sensitive_content(index.indexed_content)
+            ):
                 continue
 
             current_hash = hashlib.sha256(

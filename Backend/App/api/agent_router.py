@@ -12,6 +12,7 @@ from App.api.terminal_router import terminal_service
 from App.auth.auth import get_current_user
 from App.database.database import SessionLocal, get_db
 from App.models.project import Project
+from App.models.project_file import ProjectFile
 from App.models.user import User
 from App.schema.agent_schema import (
     AgentApproval,
@@ -30,17 +31,19 @@ from App.service.AI.agent.agent_task_service import (
 from App.service.AI.agent.agent_tools import AgentToolError, AgentTools
 from App.service.AI.code_action_service import (
     CodeActionService,
+    MAX_RESULTING_FILE_CHARS,
     PatchAction,
     PatchNotFoundError,
     PatchValidationError,
     StalePatchError,
     UnsupportedPatchOperation,
 )
+from App.service.AI.index.repository_index_service import RepositoryIndexService
 
 
 router = APIRouter(prefix="/ai/agent", tags=["AI Agent"])
 logger = logging.getLogger(__name__)
-agent_tasks = AgentTaskStore()
+agent_tasks = AgentTaskStore(SessionLocal)
 
 
 def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
@@ -105,16 +108,41 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         try:
             plan, actions, command = TaskPlanner.parse(response)
         except ValueError as error:
+            last_error = error
+            for attempt in range(2):
+                task.add_step(
+                    "plan",
+                    "running",
+                    "Repairing invalid implementation plan",
+                    input=f"Repair attempt {attempt + 1} of 2",
+                    error=str(last_error),
+                )
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                response = await ai_service.chat(
+                    message=TaskPlanner.repair_prompt(
+                        task.task, response, str(last_error)
+                    ),
+                    context=context or "No relevant repository context was found.",
+                    history=[],
+                )
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                try:
+                    plan, actions, command = TaskPlanner.parse(response)
+                    break
+                except ValueError as repair_error:
+                    last_error = repair_error
+            else:
+                raise last_error
+        if not actions and not command:
             task.add_step(
-                "plan", "running", "Repairing invalid implementation plan",
-                error=str(error),
+                "plan", "running", "Retrying plan with inferred file targets",
             )
             if getattr(task, "status", None) == "cancelled":
                 return
             response = await ai_service.chat(
-                message=TaskPlanner.repair_prompt(
-                    task.task, response, str(error)
-                ),
+                message=TaskPlanner.missing_actions_prompt(task.task, response),
                 context=context or "No relevant repository context was found.",
                 history=[],
             )
@@ -144,6 +172,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         else:
             task.status = "completed"
             task.stop_reason = "Planning completed without proposed file changes."
+        task.persist()
     except Exception as error:
         logger.exception("Agent planning failed for task %s", task_id)
         task.status = "failed"
@@ -206,6 +235,32 @@ def create_agent_task(
     return task.as_dict()
 
 
+@router.get("/tasks", response_model=list[AgentTaskResponse])
+def list_agent_tasks(
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if project_id is not None:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.id == project_id,
+                Project.user_id == current_user.id,
+            )
+            .first()
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+    return [
+        task.as_dict()
+        for task in agent_tasks.list_for_user(
+            cast(int, current_user.id),
+            project_id,
+        )
+    ]
+
+
 @router.get("/tasks/{task_id}", response_model=AgentTaskResponse)
 def get_agent_task(
     task_id: str,
@@ -251,9 +306,24 @@ def approve_agent_changes(
         if not task.validation_command and not any(
             item.get("status") == "awaiting_approval" for item in task.actions
         ):
-            task.status = "completed"
-            task.stop_reason = "All proposed changes were rejected."
-            task.add_step("finish", "completed", task.stop_reason)
+            failed_action = next(
+                (
+                    item for item in task.actions
+                    if item.get("status") == "failed"
+                ),
+                None,
+            )
+            if failed_action is not None:
+                task.status = "failed"
+                task.stop_reason = str(
+                    failed_action.get("error")
+                    or "An approved change could not be applied."
+                )
+            else:
+                task.status = "completed"
+                task.stop_reason = "All proposed changes were rejected."
+                task.add_step("finish", "completed", task.stop_reason)
+        task.persist()
         return task.as_dict()
 
     if agent_tasks.transition(task.id, user_id, "awaiting_approval", "executing") is None:
@@ -283,6 +353,7 @@ def approve_agent_changes(
                 "file_id": updated_file.id,
                 "old_hash": hashlib.sha256(old_content.encode("utf-8")).hexdigest(),
                 "new_hash": hashlib.sha256((updated_file.content or "").encode("utf-8")).hexdigest(),
+                "previous_content": old_content,
                 "old_code": action.old_code,
                 "new_code": action.new_code,
                 "approved_by": user_id,
@@ -293,26 +364,182 @@ def approve_agent_changes(
                 "content": updated_file.content or "",
                 "file_id": updated_file.id,
             })
+            task.changes.append(change_results[-1])
+            task.persist()
         except (
             AgentToolError, PatchNotFoundError, PatchValidationError,
             StalePatchError, UnsupportedPatchOperation,
         ) as error:
             item["status"] = "failed"
             item["error"] = str(error)
-            task.status = "failed"
-            task.stop_reason = str(error)
             task.add_step("code_action", "failed", "Approved change was rejected", error=str(error))
             break
 
     if task.status not in {"failed", "cancelled"}:
         pending = any(item.get("status") == "awaiting_approval" for item in task.actions)
+        failed = any(item.get("status") == "failed" for item in task.actions)
         if pending or task.validation_command:
             task.status = "awaiting_approval"
+            task.stop_reason = None
+        elif failed:
+            task.status = "failed"
+            task.stop_reason = next(
+                (
+                    str(item.get("error"))
+                    for item in task.actions
+                    if item.get("status") == "failed" and item.get("error")
+                ),
+                "An approved change could not be applied.",
+            )
         else:
             task.status = "completed"
             task.add_step("finish", "completed", "Approved changes applied")
+    task.persist()
     response: dict[str, object] = task.as_dict()
     response["changes"] = change_results
+    return response
+
+
+@router.post("/tasks/{task_id}/undo", response_model=AgentTaskResponse)
+def undo_agent_task_changes(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user_id = cast(int, current_user.id)
+    task = _get_owned_task(task_id, user_id, db)
+    if task.status in {"pending", "planning", "executing", "validating"}:
+        raise HTTPException(status_code=409, detail="Wait for the agent task to pause before undoing.")
+
+    changes = [
+        change for change in task.change_history
+        if not change.get("rolled_back", False)
+    ]
+    if not changes:
+        raise HTTPException(status_code=409, detail="No reversible AI changes remain.")
+
+    current_contents: dict[int, str] = {}
+    files: dict[int, ProjectFile] = {}
+    for change in reversed(changes):
+        file_id = change.get("file_id")
+        previous_content = change.get("previous_content")
+        expected_hash = change.get("new_hash")
+        if (
+            not isinstance(file_id, int)
+            or not isinstance(previous_content, str)
+            or not isinstance(expected_hash, str)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="File has changed since this AI action. Review manually.",
+            )
+        project_file = files.get(file_id)
+        if project_file is None:
+            project_file = (
+                db.query(ProjectFile)
+                .filter(
+                    ProjectFile.id == file_id,
+                    ProjectFile.project_id == task.project_id,
+                    ProjectFile.type == "file",
+                )
+                .with_for_update()
+                .first()
+            )
+            if project_file is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="File has changed since this AI action. Review manually.",
+                )
+            files[file_id] = project_file
+
+        current_content = current_contents.get(
+            file_id,
+            project_file.content or "",
+        )
+        current_hash = hashlib.sha256(
+            current_content.encode("utf-8")
+        ).hexdigest()
+        if current_hash != expected_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="File has changed since this AI action. Review manually.",
+            )
+        if len(previous_content) > MAX_RESULTING_FILE_CHARS:
+            raise HTTPException(
+                status_code=409,
+                detail="This change is too large to roll back automatically. Review manually.",
+            )
+        current_contents[file_id] = previous_content
+
+    for file_id, content in current_contents.items():
+        project_file = files[file_id]
+        project_file.content = content
+        project_file.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+    restored_changes: list[dict[str, object]] = []
+    index_failures = 0
+    for file_id, content in current_contents.items():
+        project_file = files[file_id]
+        restored_changes.append({
+            "path": str(
+                next(
+                    (
+                        change.get("path")
+                        for change in reversed(changes)
+                        if change.get("file_id") == file_id
+                    ),
+                    project_file.name,
+                )
+            ),
+            "content": content,
+            "file_id": file_id,
+        })
+        try:
+            RepositoryIndexService(db, task.project_id).create_or_update_index(
+                project_file
+            )
+        except Exception as error:
+            index_failures += 1
+            logger.warning(
+                "Index refresh after agent rollback failed for project %s file %s (%s).",
+                task.project_id,
+                file_id,
+                type(error).__name__,
+            )
+
+    reverted_paths = {change.get("path") for change in changes}
+    for item in task.actions:
+        action = item.get("action")
+        if (
+            isinstance(action, dict)
+            and action.get("file_path") in reverted_paths
+            and item.get("status") == "applied"
+        ):
+            item["status"] = "reverted"
+    for change in changes:
+        change["rolled_back"] = True
+    task.changes = restored_changes
+    task.stop_reason = (
+        "AI changes were restored, but repository indexing needs to be retried."
+        if index_failures
+        else "AI changes were rolled back safely."
+    )
+    task.add_step(
+        "rollback",
+        "completed",
+        f"Safely restored {len(restored_changes)} file(s) from this task.",
+    )
+    if index_failures:
+        task.add_step(
+            "index",
+            "failed",
+            "Files restored but repository index refresh failed.",
+            error="Retry project indexing.",
+        )
+    task.persist()
+    response = task.as_dict()
+    response["changes"] = restored_changes
     return response
 
 
@@ -359,6 +586,7 @@ def run_agent_validation(
         )
         task.validation_result = safe_result.model_dump()
         if getattr(task, "status", None) == "cancelled":
+            task.persist()
             return task.as_dict()
         if result.success:
             task.status = "completed"
@@ -387,6 +615,7 @@ def run_agent_validation(
             else str(error)[:1000]
         )
         task.add_step("test", "failed", "Validation could not run", error=str(error))
+    task.persist()
     return task.as_dict()
 
 
@@ -413,14 +642,36 @@ def continue_agent_task(
 ):
     user_id = cast(int, current_user.id)
     task = _get_owned_task(task_id, user_id, db)
+    if task.status == "paused":
+        if agent_tasks.transition(task.id, user_id, "paused", "planning") is None:
+            raise HTTPException(status_code=409, detail="Task recovery is already in progress.")
+        task.stop_reason = None
+        task.add_step(
+            "recovery",
+            "completed",
+            "User requested recovery; the project will be inspected again before changes are proposed.",
+        )
+        background_tasks.add_task(_plan_task, task.id, user_id)
+        return task.as_dict()
     if task.status != "failed" or task.iteration >= MAX_AGENT_ITERATIONS:
         raise HTTPException(status_code=409, detail="Task cannot continue.")
     if task.validation_result is None:
-        raise HTTPException(status_code=409, detail="Only failed validation can be continued.")
+        if agent_tasks.transition(task.id, user_id, "failed", "planning") is None:
+            raise HTTPException(status_code=409, detail="Task retry is already in progress.")
+        task.iteration += 1
+        task.stop_reason = None
+        task.add_step(
+            "recovery",
+            "completed",
+            "User requested a retry after planning failed.",
+        )
+        background_tasks.add_task(_plan_task, task.id, user_id)
+        return task.as_dict()
     if agent_tasks.transition(task.id, user_id, "failed", "planning") is None:
         raise HTTPException(status_code=409, detail="Task continuation is already in progress.")
     task.iteration += 1
     task.stop_reason = None
+    task.persist()
     background_tasks.add_task(_continue_task, task.id, user_id)
     return task.as_dict()
 
@@ -465,11 +716,13 @@ async def _continue_task(task_id: str, user_id: int) -> None:
         if task.status == "failed":
             task.iteration = MAX_AGENT_ITERATIONS
         task.add_step("analyze", "completed", "Prepared a bounded correction proposal")
+        task.persist()
     except Exception as error:
         if getattr(task, "status", None) == "cancelled":
             return
         task.status = "failed"
         task.stop_reason = str(error)[:1000]
         task.add_step("finish", "failed", "Correction planning failed", error=str(error))
+        task.persist()
     finally:
         db.close()

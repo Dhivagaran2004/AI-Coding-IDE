@@ -17,9 +17,17 @@ class CodeChunk:
 class CodeChunker:
     SECRET_CONTENT_PATTERNS = (
         re.compile(
-            r"(?i)(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|"
-            r"access[_-]?token|refresh[_-]?token|credential)"
-            r"\s*[:=]\s*['\"][A-Za-z0-9_./+=-]{12,}['\"]"
+            r"(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|"
+            r"access[_-]?token|refresh[_-]?token|credential|authorization|"
+            r"database_url)\b\s*[:=]\s*[\"']?[A-Za-z0-9_./+=:@-]{12,}"
+        ),
+        re.compile(
+            r"\b(?:hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"
+            r"github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
+        ),
+        re.compile(
+            r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\."
+            r"[A-Za-z0-9_-]{12,}\b"
         ),
         re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     )
@@ -105,6 +113,15 @@ class CodeChunker:
             return False
         return True
 
+    @classmethod
+    def contains_sensitive_content(cls, content: str | None) -> bool:
+        if not content:
+            return False
+        return any(
+            pattern.search(content)
+            for pattern in cls.SECRET_CONTENT_PATTERNS
+        )
+
     def chunk_file(
         self,
         project_id: int,
@@ -115,12 +132,9 @@ class CodeChunker:
     ) -> list[CodeChunk]:
         if (
             not self.is_indexable_path(file_path)
-            or not content
+            or             not content
             or "\x00" in content
-            or any(
-                pattern.search(content)
-                for pattern in self.SECRET_CONTENT_PATTERNS
-            )
+            or self.contains_sensitive_content(content)
         ):
             return []
 

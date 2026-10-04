@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
 
 class BaseLLMProvider(ABC):
@@ -30,3 +31,12 @@ class BaseLLMProvider(ABC):
         """
 
         raise NotImplementedError
+
+    async def generate_stream(
+        self,
+        message: str,
+        context: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream a response, falling back to a single chunk for legacy providers."""
+        yield await self.generate(message, context=context, history=history)

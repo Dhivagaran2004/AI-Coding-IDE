@@ -1,5 +1,6 @@
 from datetime import datetime
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -100,9 +101,11 @@ class FakeAIService:
     def __init__(self, response: str):
         self.responses = response if isinstance(response, list) else [response]
         self.loop_ids = []
+        self.messages = []
 
     async def chat(self, message, context=None, history=None):
         self.loop_ids.append(id(asyncio.get_running_loop()))
+        self.messages.append(message)
         if len(self.responses) > 1:
             return self.responses.pop(0)
         return self.responses[0]
@@ -111,6 +114,11 @@ class FakeAIService:
 class NoopIndexer:
     def index_file(self, file):
         return 0
+
+
+class NoopRepositoryIndexer:
+    def create_or_update_index(self, file):
+        return None
 
 
 def make_agent_client(agent_db, monkeypatch, owner_id=1, reset_store=True):
@@ -157,6 +165,208 @@ def test_task_planner_validates_structured_multi_file_actions():
     assert plan == ["Review both files"]
     assert len(actions) == 2
     assert command == "python -m pytest"
+
+
+def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
+    prompt = TaskPlanner.prompt("Create a login page using HTML and CSS")
+
+    assert "Infer the relevant existing target files" in prompt
+    assert "do not require the user to name files" in prompt
+    assert "coordinated actions for every necessary file" in prompt
+    assert "Do not return an empty actions array for an implementation request" in prompt
+
+
+def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):
+    persistent_sessions = sessionmaker(bind=agent_db.get_bind())
+    first_store = AgentTaskStore(persistent_sessions)
+    task = first_store.create(
+        project_id=1,
+        user_id=1,
+        task="Update a validated function",
+    )
+    task.status = "executing"
+    task.actions = [{"status": "applied", "action": action_payload()}]
+    task.changes = [{"path": "main.py", "content": "updated", "file_id": 11}]
+    task.add_step("code_action", "completed", "Applied approved file change")
+
+    recovered = AgentTaskStore(persistent_sessions).get(task.id, 1)
+
+    assert recovered is not None
+    assert recovered.status == "paused"
+    assert recovered.actions[0]["status"] == "applied"
+    assert recovered.changes[0]["path"] == "main.py"
+    assert recovered.steps[-1].description == "Applied approved file change"
+    assert AgentTaskStore(persistent_sessions).get(task.id, 2) is None
+
+
+def prepare_undo_task(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "RepositoryIndexService",
+        lambda db, project_id: NoopRepositoryIndexer(),
+    )
+    project_file = agent_db.query(ProjectFile).filter(ProjectFile.id == 11).one()
+    previous_content = project_file.content
+    current_content = previous_content.replace("return 1", "return 2")
+    project_file.content = current_content
+    agent_db.commit()
+
+    task = agent_router.agent_tasks.create(1, 1, "Change return value")
+    task.status = "completed"
+    task.actions = [{"action": action_payload(), "status": "applied", "error": None}]
+    task.change_history.append({
+        "path": "main.py",
+        "file_id": project_file.id,
+        "old_hash": hashlib.sha256(previous_content.encode()).hexdigest(),
+        "new_hash": hashlib.sha256(current_content.encode()).hexdigest(),
+        "previous_content": previous_content,
+        "old_code": "    return 1\n",
+        "new_code": "    return 2\n",
+    })
+    task.changes = [{
+        "path": "main.py",
+        "content": current_content,
+        "file_id": project_file.id,
+    }]
+    return client, task, previous_content
+
+
+def test_agent_undo_restores_file_when_hash_is_unchanged(agent_db, monkeypatch):
+    client, task, previous_content = prepare_undo_task(agent_db, monkeypatch)
+
+    response = client.post(f"/ai/agent/tasks/{task.id}/undo")
+
+    assert response.status_code == 200
+    assert response.json()["actions"][0]["status"] == "reverted"
+    assert response.json()["change_history"][0]["rolled_back"] is True
+    assert agent_db.query(ProjectFile).filter(ProjectFile.id == 11).one().content == previous_content
+
+
+def test_agent_undo_rejects_a_file_modified_after_ai_change(agent_db, monkeypatch):
+    client, task, _ = prepare_undo_task(agent_db, monkeypatch)
+    project_file = agent_db.query(ProjectFile).filter(ProjectFile.id == 11).one()
+    project_file.content = "user's newer edit\n"
+    agent_db.commit()
+
+    response = client.post(f"/ai/agent/tasks/{task.id}/undo")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "File has changed since this AI action. Review manually."
+    assert project_file.content == "user's newer edit\n"
+
+
+def test_agent_undo_rolls_back_multiple_files_as_one_change_set(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "RepositoryIndexService",
+        lambda db, project_id: NoopRepositoryIndexer(),
+    )
+    original_main = agent_db.get(ProjectFile, 11).content
+    other_file = ProjectFile(
+        id=13,
+        project_id=1,
+        name="other.py",
+        type="file",
+        content="value = 2\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(other_file)
+    agent_db.flush()
+    original_other = "value = 1\n"
+    current_main = original_main.replace("return 1", "return 3")
+    agent_db.get(ProjectFile, 11).content = current_main
+    other_file.content = "value = 2\n"
+    agent_db.commit()
+
+    task = agent_router.agent_tasks.create(1, 1, "Update two files")
+    task.status = "completed"
+    task.actions = [
+        {"action": action_payload(), "status": "applied", "error": None},
+        {
+            "action": {
+                **action_payload(),
+                "file_path": "other.py",
+            },
+            "status": "applied",
+            "error": None,
+        },
+    ]
+    task.change_history = [
+        {
+            "path": "main.py",
+            "file_id": 11,
+            "previous_content": original_main,
+            "new_hash": hashlib.sha256(current_main.encode()).hexdigest(),
+        },
+        {
+            "path": "other.py",
+            "file_id": 13,
+            "previous_content": original_other,
+            "new_hash": hashlib.sha256(other_file.content.encode()).hexdigest(),
+        },
+    ]
+
+    response = client.post(f"/ai/agent/tasks/{task.id}/undo")
+
+    assert response.status_code == 200
+    assert agent_db.get(ProjectFile, 11).content == original_main
+    assert agent_db.get(ProjectFile, 13).content == original_other
+    assert all(change["rolled_back"] for change in response.json()["change_history"])
+
+
+def test_agent_undo_is_project_and_user_scoped(agent_db, monkeypatch):
+    client, task, _ = prepare_undo_task(agent_db, monkeypatch)
+    client.app.dependency_overrides[get_current_user] = lambda: type(
+        "UserIdentity", (), {"id": 2}
+    )()
+
+    response = client.post(f"/ai/agent/tasks/{task.id}/undo")
+
+    assert response.status_code == 404
+
+
+def test_agent_multi_file_undo_makes_no_partial_changes_on_conflict(
+    agent_db,
+    monkeypatch,
+):
+    client, task, original_main = prepare_undo_task(agent_db, monkeypatch)
+    other_file = ProjectFile(
+        id=13,
+        project_id=1,
+        name="other.py",
+        type="file",
+        content="user change\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(other_file)
+    agent_db.flush()
+    expected_other = "value = 1\n"
+    task.change_history.append({
+        "path": "other.py",
+        "file_id": 13,
+        "previous_content": expected_other,
+        "new_hash": hashlib.sha256(b"ai change\n").hexdigest(),
+    })
+    task.change_history[0]["new_hash"] = hashlib.sha256(
+        b"ai change\n"
+    ).hexdigest()
+    task.change_history[0]["file_id"] = 11
+    project_file = agent_db.get(ProjectFile, 11)
+    project_file.content = "ai change\n"
+    agent_db.commit()
+
+    response = client.post(f"/ai/agent/tasks/{task.id}/undo")
+
+    assert response.status_code == 409
+    assert project_file.content == "ai change\n"
+    assert other_file.content == "user change\n"
+    assert task.change_history[0].get("rolled_back") is not True
 
 
 @pytest.mark.parametrize(
@@ -217,6 +427,31 @@ def test_agent_task_requires_approval_before_applying_changes(agent_db, monkeypa
     assert file.content.endswith("return 2\n")
 
 
+def test_agent_retries_empty_plan_with_inferred_file_targets(agent_db, monkeypatch):
+    empty_plan = json.dumps({
+        "plan": ["Identify the files needed for the login page"],
+        "actions": [],
+        "validation_command": None,
+    })
+    service = FakeAIService([empty_plan, make_plan_response()])
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create a login page using HTML and CSS"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "awaiting_approval"
+    assert len(task["actions"]) == 1
+    assert "infer the relevant existing target files" in service.messages[1]
+    assert any(
+        step["description"] == "Retrying plan with inferred file targets"
+        for step in task["steps"]
+    )
+
+
 def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeypatch):
     invalid_action = action_payload()
     invalid_action.pop("old_code")
@@ -242,6 +477,77 @@ def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeyp
     assert task["actions"][0]["action"]["old_code"] == "    return 1\n"
     assert any(step["description"] == "Repairing invalid implementation plan" for step in task["steps"])
     assert len(set(agent_router.ai_service.loop_ids)) == 1
+
+
+def test_agent_repairs_unsupported_create_operation(agent_db, monkeypatch):
+    invalid_action = {**action_payload(), "operation": "create"}
+    invalid_response = json.dumps({
+        "plan": ["Create the requested page"],
+        "actions": [invalid_action],
+        "validation_command": None,
+    })
+    service = FakeAIService([invalid_response, make_plan_response()])
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create a login page using HTML and CSS"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "awaiting_approval"
+    assert task["actions"][0]["action"]["operation"] == "replace"
+    assert "operation=replace exactly" in service.messages[0]
+    assert "do not use create, create_file, insert, or delete" in service.messages[1]
+    assert any(
+        step["description"] == "Repairing invalid implementation plan"
+        for step in task["steps"]
+    )
+
+
+def test_agent_retries_invalid_plan_and_can_retry_after_repair_limit(agent_db, monkeypatch):
+    invalid_response = json.dumps({
+        "plan": ["Update the return value"],
+        "actions": [{
+            **action_payload(),
+            "old_code": "",
+        }],
+        "validation_command": None,
+    })
+    service = FakeAIService([
+        invalid_response,
+        invalid_response,
+        invalid_response,
+        make_plan_response(),
+    ])
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate"},
+    )
+    task_id = created.json()["id"]
+    failed = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert failed["status"] == "failed"
+    assert len(service.messages) == 3
+    assert sum(
+        step["description"] == "Repairing invalid implementation plan"
+        for step in failed["steps"]
+    ) == 2
+    assert "empty old_code is only valid at line 1" in service.messages[1]
+    assert "empty old_code is only valid at line 1" in service.messages[2]
+
+    retried = client.post(f"/ai/agent/tasks/{task_id}/continue")
+    recovered = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert retried.status_code == 202
+    assert recovered["status"] == "awaiting_approval"
+    assert recovered["iteration"] == 1
+    assert recovered["actions"][0]["status"] == "awaiting_approval"
+    assert len(service.messages) == 4
 
 
 def test_agent_can_fill_an_empty_existing_file(agent_db, monkeypatch):
@@ -300,6 +606,65 @@ def test_agent_approval_rejects_stale_patch(agent_db, monkeypatch):
     assert response.json()["status"] == "failed"
     assert response.json()["actions"][0]["status"] == "failed"
     assert file.content.endswith("return 9\n")
+
+
+def test_agent_can_approve_remaining_actions_after_stale_patch(agent_db, monkeypatch):
+    response = json.dumps({
+        "plan": ["Update both files"],
+        "actions": [
+            action_payload(),
+            {
+                **action_payload(),
+                "file_path": "other.py",
+                "start_line": 1,
+                "end_line": 1,
+                "old_code": "value = 1\n",
+                "new_code": "value = 2\n",
+            },
+        ],
+        "validation_command": None,
+    })
+    other_file = ProjectFile(
+        id=13,
+        project_id=1,
+        name="other.py",
+        type="file",
+        content="value = 1\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(other_file)
+    agent_db.commit()
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(response))
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post("/ai/agent/tasks", json={"project_id": 1, "task": "Update both files"})
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+    stale_file = agent_db.get(ProjectFile, 11)
+    stale_file.content = "def calculate():\n    return 9\n"
+    agent_db.commit()
+
+    stale_approval = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"action_indexes": [0]},
+    )
+    remaining_approval = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"action_indexes": [1]},
+    )
+
+    assert stale_approval.status_code == 200
+    assert stale_approval.json()["status"] == "awaiting_approval"
+    assert stale_approval.json()["actions"][0]["status"] == "failed"
+    assert stale_approval.json()["actions"][1]["status"] == "awaiting_approval"
+    assert remaining_approval.status_code == 200
+    assert remaining_approval.json()["status"] == "failed"
+    assert remaining_approval.json()["actions"][1]["status"] == "applied"
+    assert remaining_approval.json()["changes"][0]["content"] == "value = 2\n"
+    assert stale_file.content.endswith("return 9\n")
+    saved_other_file = agent_db.query(ProjectFile).filter(ProjectFile.id == 13).one()
+    assert saved_other_file.content == "value = 2\n"
 
 
 def test_agent_approval_preserves_file_changes_outside_patch(agent_db, monkeypatch):
