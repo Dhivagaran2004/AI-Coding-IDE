@@ -361,7 +361,10 @@ class TaskPlanner:
             "project file list and inspected source; do not require the user to "
             "name files when the targets are clear. For a feature spanning "
             "multiple files, propose coordinated actions for every necessary "
-            "file, with at most one action per file. Do not return an empty "
+            "file, with exactly one separate action per changed file. Use "
+            "detected file relationships to include supporting modules and "
+            "wire them to the main/entry-point file with the required imports "
+            "or calls; describe those links in the plan. Do not return an empty "
             "actions array for an implementation request when the relevant "
             "source is available in context. Return no actions only when no "
             "appropriate existing file can be identified or its exact source "
@@ -391,7 +394,10 @@ class TaskPlanner:
             "validation issue without weakening the requirements. Infer "
             "relevant existing target files from the project context; include "
             "coordinated actions for all necessary files when the task spans "
-            "multiple files. Use operation=replace exactly; do not use create, "
+            "multiple files, with one separate action per changed file. "
+            "Preserve required imports/calls between supporting files and the "
+            "main/entry-point file, and describe those relationships in the "
+            "plan. Use operation=replace exactly; do not use create, "
             "create_file, insert, or delete. Modify existing files only. "
             "old_code must be included and copied exactly from the provided "
             "project context. Use an "
@@ -410,6 +416,10 @@ class TaskPlanner:
             "an implementation task: inspect the provided project file list "
             "and source context, infer the relevant existing target files, "
             "and return coordinated replace actions for the complete change. "
+            "Return one separate action for each changed file. When the task "
+            "uses supporting files, wire them to the main/entry-point file "
+            "with the required imports or calls and mention those links in "
+            "the plan. "
             "Do not ask the user to identify files when the context makes "
             "suitable targets clear. Copy each old_code exactly from the "
             "provided source; do not invent file paths or source text. If no "
@@ -464,7 +474,10 @@ class TaskPlanner:
         if command is not None:
             if not isinstance(command, str):
                 raise ValueError("The validation command must be text.")
-            validate_agent_command(command)
+            try:
+                command = validate_agent_command(command)
+            except ValueError:
+                command = None
         return plan, actions, command
 
 

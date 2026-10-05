@@ -103,10 +103,12 @@ class FakeAIService:
         self.responses = response if isinstance(response, list) else [response]
         self.loop_ids = []
         self.messages = []
+        self.contexts = []
 
     async def chat(self, message, context=None, history=None):
         self.loop_ids.append(id(asyncio.get_running_loop()))
         self.messages.append(message)
+        self.contexts.append(context)
         if len(self.responses) > 1:
             return self.responses.pop(0)
         return self.responses[0]
@@ -168,13 +170,105 @@ def test_task_planner_validates_structured_multi_file_actions():
     assert command == "python -m pytest"
 
 
+def test_task_planner_ignores_unsupported_optional_validation_command():
+    payload = {
+        "plan": ["Update the login workflow"],
+        "actions": [action_payload()],
+        "validation_command": "python app.py",
+    }
+
+    plan, actions, command = TaskPlanner.parse(json.dumps(payload))
+
+    assert plan == ["Update the login workflow"]
+    assert len(actions) == 1
+    assert command is None
+
+
 def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
     prompt = TaskPlanner.prompt("Create a login page using HTML and CSS")
 
     assert "Infer the relevant existing target files" in prompt
     assert "do not require the user to name files" in prompt
     assert "coordinated actions for every necessary file" in prompt
+    assert "one separate action per changed file" in prompt
+    assert "main/entry-point file" in prompt
     assert "Do not return an empty actions array for an implementation request" in prompt
+
+
+def test_agent_discovers_import_relationships_to_related_files(agent_db):
+    main_file = agent_db.get(ProjectFile, 11)
+    main_file.content = "from helpers import calculate\n\ncalculate()\n"
+    helper_file = ProjectFile(
+        id=14,
+        project_id=1,
+        name="helpers.py",
+        type="file",
+        content="def calculate():\n    return 1\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(helper_file)
+    agent_db.commit()
+
+    relationships = AgentTools(agent_db, 1, 1).find_file_relationships(["main.py"])
+
+    assert relationships == [("main.py", "helpers.py")]
+
+
+def test_agent_plans_related_changes_for_main_and_helper_files(agent_db, monkeypatch):
+    main_file = agent_db.get(ProjectFile, 11)
+    main_file.content = (
+        "from helpers import calculate\n\n"
+        "def run():\n"
+        "    return calculate()\n"
+    )
+    helper_file = ProjectFile(
+        id=14,
+        project_id=1,
+        name="helpers.py",
+        type="file",
+        content="def calculate():\n    return 1\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(helper_file)
+    agent_db.commit()
+    response = json.dumps({
+        "plan": ["Update the helper and keep the main entry point connected"],
+        "actions": [
+            {
+                **action_payload(),
+                "start_line": 4,
+                "end_line": 4,
+                "old_code": "    return calculate()\n",
+            },
+            {
+                **action_payload(),
+                "file_path": "helpers.py",
+                "start_line": 2,
+                "end_line": 2,
+                "old_code": "    return 1\n",
+                "new_code": "    return 2\n",
+            },
+        ],
+        "validation_command": None,
+    })
+    service = FakeAIService(response)
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and wire it through main.py"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "awaiting_approval"
+    assert len(task["actions"]) == 2
+    assert "main.py -> helpers.py" in service.contexts[0]
+    assert "FILE: helpers.py\ndef calculate():" in service.contexts[0]
 
 
 def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):

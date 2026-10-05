@@ -74,19 +74,41 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         task.add_step("search", "completed", "Searched project files", output="\n".join(
             str(item.get("path", "")) for item in matches
         ))
+        matched_paths = [str(result["path"]) for result in matches[:4]]
+        relationships = tools.find_file_relationships(matched_paths)
+        related_paths = [
+            target if source in matched_paths else source
+            for source, target in relationships
+        ]
+        inspect_paths = list(dict.fromkeys([*matched_paths, *related_paths]))[:6]
+        inspected_paths = set(inspect_paths)
+        relationships = [
+            (source, target)
+            for source, target in relationships
+            if source in inspected_paths and target in inspected_paths
+        ]
         inspected: list[str] = []
-        for result in matches[:4]:
-            path = str(result["path"])
+        for path in inspect_paths:
             try:
                 file_data = tools.inspect_file(path)
             except AgentToolError:
                 continue
-            inspected.append(f"FILE: {path}\n{str(file_data['content'])[:6000]}")
+            inspected.append(f"FILE: {path}\n{str(file_data['content'])[:4500]}")
             task.add_step("inspect", "completed", f"Inspected {path}")
         context = tools.retrieve_context(task.task)[:30000]
         tree = "PROJECT FILES:\n" + "\n".join(file_paths)
         if tree:
             context = f"{tree}\n\n{context}"
+        if relationships:
+            relationship_lines = [
+                f"{source} -> {target}" for source, target in relationships
+            ]
+            context = (
+                "FILE RELATIONSHIPS (detected imports/references):\n"
+                + "\n".join(relationship_lines)
+                + "\n\n"
+                + context
+            )
         if inspected:
             context = f"INSPECTED FILES:\n{'\n\n'.join(inspected)}\n\n{context}"
         if task.current_context:

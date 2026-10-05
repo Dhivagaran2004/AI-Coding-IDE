@@ -49,6 +49,13 @@ class AgentTools:
         r"github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
     )
     SECRET_NAME_MARKERS = ("secret", "credential", "password", "private_key")
+    PYTHON_IMPORT = re.compile(
+        r"(?m)^\s*(?:from\s+([\w.]+)\s+import\s+([\w*., ]+)|"
+        r"import\s+([\w.]+))"
+    )
+    MODULE_IMPORT = re.compile(
+        r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']"""
+    )
 
     def __init__(self, db: Session, project_id: int, user_id: int):
         self.db = db
@@ -165,6 +172,89 @@ class AgentTools:
             result
             for _, result in matches[:self.MAX_SEARCH_RESULTS]
         ]
+
+    def find_file_relationships(
+        self,
+        file_paths: list[str],
+        max_relationships: int = 12,
+    ) -> list[tuple[str, str]]:
+        relevant_paths = set(file_paths)
+        if not relevant_paths:
+            return []
+        files = (
+            self.db.query(ProjectFile)
+            .filter(
+                ProjectFile.project_id == self.project_id,
+                ProjectFile.type == "file",
+            )
+            .order_by(ProjectFile.id.asc())
+            .all()
+        )
+        safe_files = [
+            (self.get_file_path(project_file), project_file)
+            for project_file in files
+            if self.is_safe_path(self.get_file_path(project_file))
+        ]
+        available_paths = {path for path, _ in safe_files}
+        relationships: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for source_path, project_file in safe_files:
+            content = cast(str | None, project_file.content) or ""
+            if len(content) > self.MAX_INSPECT_CHARS or self.SECRET_CONTENT.search(content):
+                continue
+            references: set[str] = set()
+            for match in self.PYTHON_IMPORT.finditer(content):
+                module = match.group(1) or match.group(3)
+                imported_names = match.group(2)
+                if module:
+                    references.add(module)
+                if imported_names:
+                    references.update(
+                        name.strip().split(" as ", 1)[0]
+                        for name in imported_names.split(",")
+                        if name.strip() and name.strip() != "*"
+                    )
+            references.update(
+                match.group(1) for match in self.MODULE_IMPORT.finditer(content)
+            )
+
+            for reference in references:
+                normalized = reference.replace("\\", "/")
+                if normalized.startswith("."):
+                    normalized = PurePosixPath(
+                        source_path
+                    ).parent.joinpath(normalized).as_posix()
+                elif "/" not in normalized and normalized.rsplit(".", 1)[-1] not in {
+                    "py", "js", "jsx", "ts", "tsx", "java",
+                }:
+                    normalized = normalized.replace(".", "/")
+                for extension in (".py", ".js", ".jsx", ".ts", ".tsx", ".java"):
+                    normalized = normalized.removesuffix(extension)
+                normalized = normalized.strip("./").casefold()
+                candidates = []
+                for path in sorted(available_paths):
+                    target_stem = path.casefold()
+                    for extension in (".py", ".js", ".jsx", ".ts", ".tsx", ".java"):
+                        target_stem = target_stem.removesuffix(extension)
+                    if (
+                        target_stem == normalized
+                        or target_stem.endswith(f"/{normalized}")
+                        or target_stem.rsplit("/", 1)[-1] == normalized.rsplit("/", 1)[-1]
+                    ):
+                        candidates.append(path)
+                for target_path in candidates:
+                    if source_path == target_path:
+                        continue
+                    if source_path not in relevant_paths and target_path not in relevant_paths:
+                        continue
+                    relationship = (source_path, target_path)
+                    if relationship not in seen:
+                        relationships.append(relationship)
+                        seen.add(relationship)
+                        if len(relationships) >= max_relationships:
+                            return relationships
+        return relationships
 
     def retrieve_context(self, query: str) -> str:
         relevance = RepositoryRelevanceService(
