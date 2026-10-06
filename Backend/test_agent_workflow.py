@@ -667,10 +667,11 @@ def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeyp
         "actions": [invalid_action],
         "validation_command": None,
     })
+    valid_response = make_plan_response()
     monkeypatch.setattr(
         agent_router,
         "ai_service",
-        FakeAIService([invalid_response, make_plan_response()]),
+        FakeAIService([invalid_response, valid_response]),
     )
     client = make_agent_client(agent_db, monkeypatch)
 
@@ -683,6 +684,11 @@ def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeyp
     assert task["status"] == "awaiting_approval"
     assert task["actions"][0]["action"]["old_code"] == "    return 1\n"
     assert any(step["description"] == "Repairing invalid implementation plan" for step in task["steps"])
+    assert [
+        step["output"]
+        for step in task["steps"]
+        if step["type"] == "plan" and step["output"]
+    ] == [invalid_response, valid_response]
     assert len(set(agent_router.ai_service.loop_ids)) == 1
 
 

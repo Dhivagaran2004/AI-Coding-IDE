@@ -120,11 +120,20 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         )
         if getattr(task, "status", None) == "cancelled":
             return
+        plan_step = task.add_step(
+            "plan",
+            "running",
+            "Generating implementation plan",
+            input="Preparing a plan and proposed changes from project context",
+        )
         response = await ai_service.chat(
             message=TaskPlanner.prompt(task.task),
             context=context or "No relevant repository context was found.",
             history=[],
         )
+        plan_step.status = "completed"
+        plan_step.output = response
+        task.persist()
         if getattr(task, "status", None) == "cancelled":
             return
         try:
@@ -132,7 +141,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         except ValueError as error:
             last_error = error
             for attempt in range(2):
-                task.add_step(
+                repair_step = task.add_step(
                     "plan",
                     "running",
                     "Repairing invalid implementation plan",
@@ -148,6 +157,9 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                     context=context or "No relevant repository context was found.",
                     history=[],
                 )
+                repair_step.status = "completed"
+                repair_step.output = response
+                task.persist()
                 if getattr(task, "status", None) == "cancelled":
                     return
                 try:
@@ -160,7 +172,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         if not actions and not command:
             previous_response = response
             for attempt in range(2):
-                task.add_step(
+                retry_step = task.add_step(
                     "plan",
                     "running",
                     "Retrying implementation plan with relevant files",
@@ -175,6 +187,9 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                     context=context or "No relevant repository context was found.",
                     history=[],
                 )
+                retry_step.status = "completed"
+                retry_step.output = response
+                task.persist()
                 if getattr(task, "status", None) == "cancelled":
                     return
                 plan, actions, command = TaskPlanner.parse(response)
@@ -213,7 +228,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                 "error": None,
             })
         task.validation_command = command
-        task.add_step("plan", "completed", "Implementation plan prepared", output="\n".join(plan))
+        task.add_step("plan", "completed", "Implementation plan prepared")
         if actions:
             task.add_step("code_action", "completed", f"Prepared {len(actions)} change(s) for review")
             task.status = "awaiting_approval"
@@ -745,7 +760,16 @@ async def _continue_task(task_id: str, user_id: int) -> None:
             f"TASK:\n{task.task}\n\n"
             f"VALIDATION RESULT:\n{str(prior_result)[:12000]}"
         )
+        plan_step = task.add_step(
+            "plan",
+            "running",
+            "Generating a correction proposal",
+            input="Analyzing the failed validation result",
+        )
         response = await ai_service.chat(message=prompt, context=context, history=[])
+        plan_step.status = "completed"
+        plan_step.output = response
+        task.persist()
         if getattr(task, "status", None) == "cancelled":
             return
         plan, actions, command = TaskPlanner.parse(response)

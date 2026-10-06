@@ -54,6 +54,7 @@ export type AgentTask = {
         type: string;
         status: string;
         description: string;
+        input?: string;
         output?: string;
         error?: string | null;
     }[];

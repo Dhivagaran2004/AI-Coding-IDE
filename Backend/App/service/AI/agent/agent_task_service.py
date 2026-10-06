@@ -87,18 +87,18 @@ class AgentTask:
         status: str,
         description: str,
         **values: str,
-    ) -> None:
-        self.steps.append(
-            AgentStep(
-                sequence=len(self.steps) + 1,
-                type=step_type,
-                status=status,
-                description=description,
-                **values,
-            )
+    ) -> AgentStep:
+        step = AgentStep(
+            sequence=len(self.steps) + 1,
+            type=step_type,
+            status=status,
+            description=description,
+            **values,
         )
+        self.steps.append(step)
         self.updated_at = datetime.now(timezone.utc).isoformat()
         self.persist()
+        return step
 
     def persist(self) -> None:
         if self.on_change is not None:

@@ -98,6 +98,40 @@ type PreviewAction =
     | "explain"
     | "tests";
 
+type CodeActionOption = {
+    action: Exclude<PreviewAction, "general">;
+    command: string;
+    label: string;
+    prompt: string;
+};
+
+const CODE_ACTIONS: CodeActionOption[] = [
+    {
+        action: "explain",
+        command: "/explain",
+        label: "Explain code",
+        prompt: "Explain this code step by step.",
+    },
+    {
+        action: "fix",
+        command: "/fix",
+        label: "Fix code",
+        prompt: "Find the bugs in this code, explain them briefly, and provide the corrected code.",
+    },
+    {
+        action: "optimize",
+        command: "/optimize",
+        label: "Optimize code",
+        prompt: "Optimize this code for performance, readability, and maintainability. Explain the improvements and provide the optimized code.",
+    },
+    {
+        action: "tests",
+        command: "/tests",
+        label: "Generate tests",
+        prompt: "Generate comprehensive unit tests for this code. Cover normal cases, edge cases, and error cases. Use the appropriate testing framework for the detected language.",
+    },
+];
+
 type DiffLineType =
     | "added"
     | "removed"
@@ -630,6 +664,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
 
     const [input, setInput] =
         useState("");
+    const [slashActionIndex, setSlashActionIndex] = useState(0);
+    const [isSlashActionMenuDismissed, setIsSlashActionMenuDismissed] = useState(false);
 
     const [
         messages,
@@ -704,6 +740,20 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         useRef<HTMLDivElement | null>(
             null,
         );
+
+    const slashActionQuery = input.startsWith("/")
+        ? input.slice(1).trim().toLowerCase()
+        : null;
+    const filteredCodeActions = slashActionQuery === null
+        ? []
+        : CODE_ACTIONS.filter((option) =>
+            option.label.toLowerCase().includes(slashActionQuery) ||
+            option.command.slice(1).includes(slashActionQuery),
+        );
+    const isSlashActionMenuOpen =
+        slashActionQuery !== null &&
+        !isSlashActionMenuDismissed &&
+        !isLoading;
 
     /* =====================================================
        DIFF
@@ -1468,6 +1518,38 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const handleKeyDown = (
         event: React.KeyboardEvent<HTMLTextAreaElement>,
     ) => {
+        if (isSlashActionMenuOpen && filteredCodeActions.length > 0) {
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setSlashActionIndex((index) =>
+                    (index + 1) % filteredCodeActions.length,
+                );
+                return;
+            }
+
+            if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setSlashActionIndex((index) =>
+                    (index - 1 + filteredCodeActions.length) %
+                    filteredCodeActions.length,
+                );
+                return;
+            }
+
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                const option = filteredCodeActions[slashActionIndex] ?? filteredCodeActions[0];
+                setQuickAction(option.action, option.prompt);
+                return;
+            }
+        }
+
+        if (event.key === "Escape" && isSlashActionMenuOpen) {
+            event.preventDefault();
+            setIsSlashActionMenuDismissed(true);
+            return;
+        }
+
         if (
             event.key === "Enter" &&
             !event.shiftKey
@@ -1496,6 +1578,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         setPreviewAction(action);
 
         setInput(prompt);
+        setIsSlashActionMenuDismissed(true);
 
         inputRef.current?.focus();
     };
@@ -1704,50 +1787,20 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                 </select>
                                 <div className="ai-chat__options-divider" />
                                 <div className="ai-chat__options-label">Code actions</div>
-                                <button
-                                    type="button"
-                                    className="ai-chat__options-item"
-                                    onClick={() => {
-                                        setIsActionsMenuOpen(false);
-                                        setQuickAction("explain", "Explain this code step by step.");
-                                    }}
-                                    disabled={!context?.trim() || isLoading}
-                                >
-                                    Explain code
-                                </button>
-                                <button
-                                    type="button"
-                                    className="ai-chat__options-item"
-                                    onClick={() => {
-                                        setIsActionsMenuOpen(false);
-                                        setQuickAction("fix", "Find the bugs in this code, explain them briefly, and provide the corrected code.");
-                                    }}
-                                    disabled={!context?.trim() || isLoading}
-                                >
-                                    Fix code
-                                </button>
-                                <button
-                                    type="button"
-                                    className="ai-chat__options-item"
-                                    onClick={() => {
-                                        setIsActionsMenuOpen(false);
-                                        setQuickAction("optimize", "Optimize this code for performance, readability, and maintainability. Explain the improvements and provide the optimized code.");
-                                    }}
-                                    disabled={!context?.trim() || isLoading}
-                                >
-                                    Optimize code
-                                </button>
-                                <button
-                                    type="button"
-                                    className="ai-chat__options-item"
-                                    onClick={() => {
-                                        setIsActionsMenuOpen(false);
-                                        setQuickAction("tests", "Generate comprehensive unit tests for this code. Cover normal cases, edge cases, and error cases. Use the appropriate testing framework for the detected language.");
-                                    }}
-                                    disabled={!context?.trim() || isLoading}
-                                >
-                                    Generate tests
-                                </button>
+                                {CODE_ACTIONS.map((option) => (
+                                    <button
+                                        key={option.action}
+                                        type="button"
+                                        className="ai-chat__options-item"
+                                        onClick={() => {
+                                            setIsActionsMenuOpen(false);
+                                            setQuickAction(option.action, option.prompt);
+                                        }}
+                                        disabled={!context?.trim() || isLoading}
+                                    >
+                                        {option.label}
+                                    </button>
+                                ))}
                             </div>
                         )}
                     </div>
@@ -1786,7 +1839,18 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                     className={`ai-chat__bubble ai-chat__bubble--${message.role}`}
                                 >
                                     <div className="ai-chat__message-content">
-                                        {message.role === "assistant" ? (
+                                        {message.role === "assistant" &&
+                                        message.content === "Thinking..." &&
+                                        isLoading ? (
+                                            <div className="ai-chat__typing" role="status" aria-label="Thinking">
+                                                <span>Thinking</span>
+                                                <span className="ai-chat__typing-dots" aria-hidden="true">
+                                                    <i />
+                                                    <i />
+                                                    <i />
+                                                </span>
+                                            </div>
+                                        ) : message.role === "assistant" ? (
                                             <ReactMarkdown
                                                 remarkPlugins={[remarkGfm]}
                                             >
@@ -1832,24 +1896,6 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                     },
                 )}
 
-                {/* Loading */}
-
-                {isLoading && (
-                    <div className="ai-chat__message-row ai-chat__message-row--assistant">
-                        <div className="ai-chat__avatar ai-chat__avatar--assistant">
-                            AI
-                        </div>
-
-                        <div className="ai-chat__bubble ai-chat__bubble--assistant">
-                            <div className="ai-chat__typing">
-                                <span />
-                                <span />
-                                <span />
-                            </div>
-                        </div>
-                    </div>
-                )}
-
             {agentTask && (
                 <section className="ai-chat__agent-panel ai-chat__bubble ai-chat__bubble--assistant" aria-live="polite">
                     <div className="ai-chat__agent-heading">
@@ -1872,9 +1918,23 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                     <p className="ai-chat__agent-task">{agentTask.task}</p>
                     {agentTask.steps.length > 0 && (
                         <ol className="ai-chat__agent-steps">
-                            {agentTask.steps.slice(-8).map((step) => (
+                            {agentTask.steps.map((step) => (
                                 <li key={step.sequence} className={`is-${step.status}`}>
                                     <span>{step.description}</span>
+                                    {step.input && (
+                                        <p className="ai-chat__agent-step-input">{step.input}</p>
+                                    )}
+                                    {step.output && (
+                                        <details className="ai-chat__agent-step-response">
+                                            <summary>
+                                                {step.type === "plan" ? "View LLM response" : "View step output"}
+                                            </summary>
+                                            <pre>{step.output}</pre>
+                                        </details>
+                                    )}
+                                    {step.error && (
+                                        <p className="ai-chat__agent-error">{step.error}</p>
+                                    )}
                                 </li>
                             ))}
                         </ol>
@@ -2252,56 +2312,81 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                     )}
                 </div>
 
-                <div className="ai-chat__input-wrapper">
-                    <textarea
-                        ref={
-                            inputRef
-                        }
-                        className="ai-chat__input"
-                        value={input}
-                        onChange={(
-                            event,
-                        ) =>
-                            setInput(
-                                event.target
-                                    .value,
-                            )
-                        }
-                        onKeyDown={
-                            handleKeyDown
-                        }
-                        placeholder={
-                            isLoading
-                                ? "AI is thinking..."
-                                : mode === "agent"
-                                    ? "Describe a coding task for the agent..."
-                                    : mode === "plan"
-                                        ? "Describe a task to plan..."
-                                        : mode === "edit"
-                                            ? "Describe the change to propose..."
-                                            : "Ask AI about your code..."
-                        }
-                        rows={1}
-                        disabled={
-                            isLoading
-                        }
-                    />
+                <div className="ai-chat__composer">
+                    {isSlashActionMenuOpen && (
+                        <div
+                            id="ai-chat-slash-actions"
+                            className="ai-chat__slash-menu"
+                            role="listbox"
+                            aria-label="Code actions"
+                        >
+                            {filteredCodeActions.length > 0 ? (
+                                filteredCodeActions.map((option, index) => (
+                                    <button
+                                        key={option.action}
+                                        type="button"
+                                        className={`ai-chat__slash-option${index === slashActionIndex ? " ai-chat__slash-option--active" : ""}`}
+                                        role="option"
+                                        aria-selected={index === slashActionIndex}
+                                        disabled={!context?.trim()}
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={() => setQuickAction(option.action, option.prompt)}
+                                    >
+                                        <span>{option.label}</span>
+                                        <code>{option.command}</code>
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="ai-chat__slash-empty" role="status">
+                                    No matching code actions
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    <div className="ai-chat__input-wrapper">
+                        <div className="ai-chat__input-content">
+                            <textarea
+                                ref={inputRef}
+                                className="ai-chat__input"
+                                value={input}
+                                onChange={(event) => {
+                                    setInput(event.target.value);
+                                    setSlashActionIndex(0);
+                                    setIsSlashActionMenuDismissed(false);
+                                }}
+                                onKeyDown={handleKeyDown}
+                                aria-controls={isSlashActionMenuOpen ? "ai-chat-slash-actions" : undefined}
+                                aria-expanded={isSlashActionMenuOpen}
+                                placeholder={
+                                    isLoading
+                                        ? "AI is thinking..."
+                                        : mode === "agent"
+                                            ? "Describe a coding task for the agent..."
+                                            : mode === "plan"
+                                                ? "Describe a task to plan..."
+                                                : mode === "edit"
+                                                    ? "Describe the change to propose..."
+                                                    : "Ask AI about your code... Type / for code actions"
+                                }
+                                rows={2}
+                                disabled={isLoading}
+                            />
+                        </div>
 
-                    <button
-                        type="button"
-                        className="ai-chat__send-button"
-                        onClick={() => isLoading
-                            ? generationAbortRef.current?.abort()
-                            : void handleSend()}
-                        disabled={
-                            !isLoading && !input.trim()
-                        }
-                        aria-label={isLoading ? "Stop generation" : "Send message"}
-                    >
-                        {isLoading
-                            ? "Stop"
-                            : "↑"}
-                    </button>
+                        <button
+                            type="button"
+                            className="ai-chat__send-button"
+                            onClick={() => isLoading
+                                ? generationAbortRef.current?.abort()
+                                : void handleSend()}
+                            disabled={!isLoading && !input.trim()}
+                            aria-label={isLoading ? "Stop generation" : "Send message"}
+                        >
+                            {isLoading
+                                ? "Stop"
+                                : "↑"}
+                        </button>
+                    </div>
                 </div>
 
                 <div className="ai-chat__composer-footer">
