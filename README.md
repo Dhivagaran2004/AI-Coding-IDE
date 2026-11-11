@@ -33,3 +33,25 @@ already exist.
   AI-provider configuration readiness without exposing credentials.
 
 The Git APIs do not commit, push, reset, or otherwise mutate repository state.
+
+## AI provider configuration
+
+Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and `GROQ_MODEL` in
+`Backend/App/.env` to enable Groq chat. The backend uses Groq's OpenAI-compatible
+chat completions endpoint and keeps the API key server-side. `openai` is already
+listed in `Backend/requirements.txt` as the compatible client SDK. Provider
+requests have a 60-second timeout; application-level retries are bounded by
+`AI_MAX_RETRIES` so an agent task cannot wait indefinitely on a planning call.
+
+Repository embeddings remain optional and can use `EMBEDDING_API_KEY` for the
+existing Hugging Face embedding endpoint. Existing deployments may continue to
+use `LLM_API_KEY` for embeddings during migration.
+
+## Docker sandbox execution
+
+- `POST /projects/{project_id}/sandbox/execute` runs project commands inside an isolated Docker workspace.
+- The sandbox uses a non-root container user, disables outbound network access, caps CPU/RAM/process limits, and enforces a 120-second maximum timeout.
+- Successful sandbox runs sync filesystem changes back to the project workspace; failed runs leave the original workspace untouched.
+- The AI agent uses the same sandbox service and database-backed project files. Read-only file tools run directly against the selected, owner-scoped project; file changes and sandbox commands require approval before applying.
+- Agent sandbox commands are restricted to approved project checks, including `python <project-file.py>`, pytest, selected npm tasks, and read-only Git status/diff. There is no host-shell fallback.
+- `AI_AGENT_MAX_TOOL_CALLS` limits the model's tool loop to 1–20 calls (default 8). Project-file database records remain authoritative; successful sandbox file changes are synchronized to those records and the workspace mirror used by terminal/Git services.

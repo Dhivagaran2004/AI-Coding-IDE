@@ -2,6 +2,7 @@ from datetime import datetime
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -113,6 +114,9 @@ class FakeAIService:
             return self.responses.pop(0)
         return self.responses[0]
 
+    async def chat_json(self, message, context=None, history=None):
+        return await self.chat(message, context=context, history=history)
+
 
 class NoopIndexer:
     def index_file(self, file):
@@ -124,7 +128,13 @@ class NoopRepositoryIndexer:
         return None
 
 
-def make_agent_client(agent_db, monkeypatch, owner_id=1, reset_store=True):
+def make_agent_client(
+    agent_db,
+    monkeypatch,
+    owner_id=1,
+    reset_store=True,
+    sync_workspace=False,
+):
     app = FastAPI()
 
     async def override_db():
@@ -142,6 +152,12 @@ def make_agent_client(agent_db, monkeypatch, owner_id=1, reset_store=True):
         "CodeActionService",
         lambda db: CodeActionService(db, vector_index_service=NoopIndexer()),
     )
+    if not sync_workspace:
+        monkeypatch.setattr(
+            agent_router.ProjectWorkspaceService,
+            "sync_file",
+            lambda *_args, **_kwargs: None,
+        )
     if reset_store:
         monkeypatch.setattr(agent_router, "agent_tasks", AgentTaskStore())
     app.include_router(agent_router.router)
@@ -170,7 +186,23 @@ def test_task_planner_validates_structured_multi_file_actions():
     assert command == "python -m pytest"
 
 
-def test_task_planner_ignores_unsupported_optional_validation_command():
+def test_task_planner_skips_valid_non_object_json_before_fenced_plan():
+    payload = {
+        "plan": ["Update the function"],
+        "actions": [action_payload()],
+        "validation_command": None,
+    }
+
+    plan, actions, command = TaskPlanner.parse(
+        f"null\n```json\n{json.dumps(payload)}\n```"
+    )
+
+    assert plan == ["Update the function"]
+    assert len(actions) == 1
+    assert command is None
+
+
+def test_task_planner_accepts_project_local_python_validation_command():
     payload = {
         "plan": ["Update the login workflow"],
         "actions": [action_payload()],
@@ -181,7 +213,7 @@ def test_task_planner_ignores_unsupported_optional_validation_command():
 
     assert plan == ["Update the login workflow"]
     assert len(actions) == 1
-    assert command is None
+    assert command == "python app.py"
 
 
 def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
@@ -193,6 +225,73 @@ def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
     assert "one separate action per changed file" in prompt
     assert "main/entry-point file" in prompt
     assert "Do not return an empty actions array for an implementation request" in prompt
+
+
+def test_task_planner_accepts_create_file_content_payload_without_losing_contents():
+    employee_source = "class Employee:\n    pass\n"
+    main_source = "from employee import Employee\n"
+    payload = {
+        "plan": ["Create the employee model and application entry point."],
+        "actions": [
+            {
+                "type": "code_change",
+                "operation": "create_file",
+                "file_path": "employee.py",
+                "description": "Define the employee model",
+                "content": employee_source,
+            },
+            {
+                "type": "create_file",
+                "file_path": "main.py",
+                "description": "Create the application entry point",
+                "content": main_source,
+            },
+        ],
+        "validation_command": "python main.py",
+    }
+
+    plan, actions, command = TaskPlanner.parse(json.dumps(payload))
+
+    assert plan == ["Create the employee model and application entry point."]
+    assert [action.operation for action in actions] == [
+        "create_file",
+        "create_file",
+    ]
+    assert [action.new_code for action in actions] == [
+        employee_source,
+        main_source,
+    ]
+    assert command == "python main.py"
+
+
+def test_task_planner_rejects_conflicting_create_file_content_fields():
+    payload = {
+        "plan": ["Create a module."],
+        "actions": [{
+            "type": "code_change",
+            "operation": "create_file",
+            "file_path": "employee.py",
+            "description": "Create employee model",
+            "content": "class Employee: pass\n",
+            "new_code": "class Other: pass\n",
+        }],
+        "validation_command": None,
+    }
+
+    with pytest.raises(ValueError, match="conflicting content and new_code"):
+        TaskPlanner.parse(json.dumps(payload))
+
+
+def test_repair_prompt_allows_creating_files_when_project_is_empty():
+    prompt = TaskPlanner.repair_prompt(
+        "Create an employee management system",
+        '{"plan":[]}',
+        "The plan omitted required actions.",
+    )
+
+    assert "operation=create_file with new_code" in prompt
+    assert "do not use a top-level type=create_file" in prompt
+    assert "Modify existing files only" not in prompt
 
 
 def test_agent_discovers_import_relationships_to_related_files(agent_db):
@@ -466,7 +565,7 @@ def test_agent_multi_file_undo_makes_no_partial_changes_on_conflict(
 
 @pytest.mark.parametrize(
     "command",
-    ["rm -rf /", "python -m pytest ../../secrets", "pytest /etc/passwd", "npm install pkg", "git reset --hard", "pytest; whoami", "pytest -p malicious_plugin"],
+    ["rm -rf /", "python -m pytest ../../secrets", "pytest /etc/passwd", "npm install pkg", "git reset --hard", "pytest; whoami", "pytest -p malicious_plugin", "python -c print(1)", "python app.py --unsafe"],
 )
 def test_agent_command_validator_rejects_unsafe_commands(command):
     with pytest.raises(ValueError):
@@ -475,6 +574,7 @@ def test_agent_command_validator_rejects_unsafe_commands(command):
 
 def test_agent_command_validator_allows_approved_project_checks():
     assert validate_agent_command("python -m pytest tests/test_auth.py") == "python -m pytest tests/test_auth.py"
+    assert validate_agent_command("python hello.py") == "python hello.py"
     assert validate_agent_command("git diff") == "git diff"
 
 
@@ -483,6 +583,11 @@ def test_task_store_enforces_owner_and_cancellation():
     task = store.create(1, 7, "Update validation")
 
     assert store.get(task.id, 8) is None
+    assert store.claim_worker(task.id, 7) is task
+    assert store.claim_worker(task.id, 7) is None
+    store.release_worker(task.id)
+    assert store.claim_worker(task.id, 7) is task
+    store.release_worker(task.id)
     assert store.cancel(task.id, 7).status == "cancelled"
     assert store.get(task.id, 7).stop_reason == "Cancelled by user."
     assert MAX_AGENT_ITERATIONS == 5
@@ -498,6 +603,316 @@ def test_agent_tools_block_traversal_secrets_and_other_projects(agent_db):
     with pytest.raises(AgentToolError):
         AgentTools(agent_db, 2, 1)
     assert ".env" not in tools.list_project_files()
+
+
+def test_agent_tool_protocol_reads_files_and_finishes_read_only_request(
+    agent_db,
+    monkeypatch,
+):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "list_files",
+            "arguments": {"path": ""},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "read_file",
+            "arguments": {"path": "main.py"},
+        }),
+        json.dumps({
+            "plan": ["main.py defines calculate and currently returns 1."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    fake_ai = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Read main.py and explain it"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "completed"
+    assert task["tool_calls_used"] == 2
+    assert task["plan"] == ["main.py defines calculate and currently returns 1."]
+    assert [step["description"] for step in task["steps"] if step["type"] == "tool"] == [
+        "list_files completed",
+        "read_file completed",
+    ]
+    assert len(fake_ai.messages) == 3
+
+
+def test_agent_create_file_tool_requires_approval_and_persists_afterward(
+    agent_db,
+    monkeypatch,
+):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "create_file",
+            "arguments": {
+                "path": "hello.py",
+                "content": "print('Hello World')\n",
+            },
+        }),
+        json.dumps({
+            "plan": ["Created hello.py as requested."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(responses))
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create hello.py"},
+    )
+    task_id = created.json()["id"]
+    waiting = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert waiting["status"] == "awaiting_approval"
+    assert waiting["actions"][0]["action"]["operation"] == "create_file"
+    assert waiting["actions"][0]["status"] == "awaiting_approval"
+    assert (
+        agent_db.query(ProjectFile)
+        .filter(ProjectFile.project_id == 1, ProjectFile.name == "hello.py")
+        .first()
+        is None
+    )
+
+    approved = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [0]},
+    ).json()
+    assert approved["actions"][0]["status"] == "applied"
+    completed = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert completed["status"] == "completed"
+    created_file = (
+        agent_db.query(ProjectFile)
+        .filter(ProjectFile.project_id == 1, ProjectFile.name == "hello.py")
+        .one()
+    )
+    assert created_file.content == "print('Hello World')\n"
+
+
+def test_agent_update_file_tool_requires_approval(agent_db, monkeypatch):
+    updated_content = "def calculate():\n    return 42\n"
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "update_file",
+            "arguments": {"path": "main.py", "content": updated_content},
+        }),
+        json.dumps({
+            "plan": ["Updated main.py."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(responses))
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update main.py"},
+    )
+    task_id = created.json()["id"]
+    waiting = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert waiting["status"] == "awaiting_approval"
+    assert waiting["actions"][0]["action"]["operation"] == "replace"
+    assert agent_db.get(ProjectFile, 11).content.endswith("return 1\n")
+
+    approved = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [0]},
+    ).json()
+
+    assert approved["actions"][0]["status"] == "applied"
+    assert approved["changes"][0]["content"] == updated_content
+    assert agent_db.get(ProjectFile, 11).content == updated_content
+
+
+def test_agent_delete_file_tool_requires_explicit_approval(agent_db, monkeypatch):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "delete_file",
+            "arguments": {"path": "main.py"},
+        }),
+        json.dumps({
+            "plan": ["Deleted main.py after approval."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(responses))
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Delete main.py"},
+    )
+    task_id = created.json()["id"]
+    waiting = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert waiting["status"] == "awaiting_approval"
+    assert waiting["actions"][0]["action"]["operation"] == "delete"
+    assert (
+        agent_db.query(ProjectFile)
+        .filter(ProjectFile.project_id == 1, ProjectFile.name == "main.py")
+        .one_or_none()
+        is not None
+    )
+
+    approved = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [0]},
+    ).json()
+
+    assert approved["actions"][0]["status"] == "applied"
+    assert approved["changes"][0]["deleted"] is True
+    assert (
+        agent_db.query(ProjectFile)
+        .filter(ProjectFile.project_id == 1, ProjectFile.name == "main.py")
+        .one_or_none()
+        is None
+    )
+
+
+def test_agent_tool_argument_errors_are_returned_to_model(agent_db, monkeypatch):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "read_file",
+            "arguments": {},
+        }),
+        json.dumps({
+            "plan": ["The requested file could not be read."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    fake_ai = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Read main.py"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "completed"
+    failed_tool = next(step for step in task["steps"] if step["type"] == "tool")
+    assert failed_tool["status"] == "failed"
+    assert "Invalid arguments for read_file" in failed_tool["error"]
+    assert "Invalid arguments for read_file" in fake_ai.messages[1]
+
+
+def test_agent_tool_loop_stops_at_configured_call_limit(agent_db, monkeypatch):
+    tool_call = json.dumps({
+        "type": "tool_call",
+        "name": "list_files",
+        "arguments": {"path": ""},
+    })
+    monkeypatch.setattr(agent_router, "AI_AGENT_MAX_TOOL_CALLS", 2)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService([tool_call, tool_call, tool_call]),
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "List project files"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "failed"
+    assert task["tool_calls_used"] == 2
+    assert "configured limit of 2 tool calls" in task["stop_reason"]
+
+
+def test_agent_task_denies_projects_owned_by_another_user(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch, owner_id=1)
+
+    response = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 2, "task": "Read private.py"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_agent_provider_failure_is_persisted_as_failed_task(agent_db, monkeypatch):
+    class FailingAIService:
+        async def chat_json(self, *_args, **_kwargs):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(agent_router, "ai_service", FailingAIService())
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Inspect the project"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "failed"
+    assert task["stop_reason"] == "provider unavailable"
+    assert any(
+        step["status"] == "failed" and "provider unavailable" in (step["error"] or "")
+        for step in task["steps"]
+    )
+
+
+def test_unexpected_worker_exit_cannot_leave_task_planning(agent_db, monkeypatch):
+    monkeypatch.setattr(
+        agent_router,
+        "_run_planning_task",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("worker crashed")),
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Inspect the project"},
+    )
+    task = client.get(f"/ai/agent/tasks/{created.json()['id']}").json()
+
+    assert task["status"] == "failed"
+    assert task["stop_reason"] == "worker crashed"
+    assert task["steps"][-1]["description"] == "Agent planning worker failed"
+
+
+def test_agent_tools_allow_auth_code_that_generates_tokens(agent_db):
+    auth_file = ProjectFile(
+        id=13,
+        project_id=1,
+        name="auth.py",
+        type="file",
+        content=(
+            "def create_token(user):\n"
+            "    access_token = jwt.encode({'sub': user.username}, SECRET_KEY)\n"
+            "    return access_token\n"
+        ),
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(auth_file)
+    agent_db.commit()
+    tools = AgentTools(agent_db, 1, 1)
+
+    inspected = tools.inspect_file("auth.py")
+    results = tools.search_project("access token")
+
+    assert inspected["content"] == auth_file.content
+    assert any(result["path"] == "auth.py" for result in results)
 
 
 def test_agent_task_requires_approval_before_applying_changes(agent_db, monkeypatch):
@@ -712,7 +1127,7 @@ def test_agent_repairs_unsupported_create_operation(agent_db, monkeypatch):
     assert task["status"] == "awaiting_approval"
     assert task["actions"][0]["action"]["operation"] == "replace"
     assert "operation=replace exactly" in service.messages[0]
-    assert "do not use create, create_file, insert, or delete" in service.messages[1]
+    assert "Use operation=create_file with new_code" in service.messages[1]
     assert any(
         step["description"] == "Repairing invalid implementation plan"
         for step in task["steps"]
@@ -910,8 +1325,10 @@ def test_agent_task_is_not_visible_to_another_user(agent_db, monkeypatch):
     other_client = make_agent_client(agent_db, monkeypatch, owner_id=2, reset_store=False)
 
     response = other_client.get(f"/ai/agent/tasks/{task['id']}")
+    resume = other_client.post(f"/ai/agent/tasks/{task['id']}/continue")
 
     assert response.status_code == 404
+    assert resume.status_code == 404
 
 
 def test_agent_task_planner_rejects_malformed_output():
@@ -965,6 +1382,419 @@ def test_agent_validation_cannot_run_before_change_decision(agent_db, monkeypatc
     assert response.status_code == 409
 
 
+def test_agent_validation_does_not_fall_back_to_host_without_docker(monkeypatch):
+    monkeypatch.setenv("ENABLE_SANDBOX", "true")
+    monkeypatch.setattr(agent_router.sandbox_service, "is_available", lambda: False)
+
+    result = agent_router._run_validation_command(1, "python -m pytest")
+
+    assert result.success is False
+    assert result.exit_code == 127
+    assert "not executed on the host" in result.stderr
+
+
+def test_agent_command_tool_requires_approval_and_returns_sandbox_output(
+    agent_db,
+    monkeypatch,
+):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "plan": ["Ran hello.py and received Hello World."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    fake_ai = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+    monkeypatch.setattr(
+        agent_router,
+        "_run_project_validation_command",
+        lambda **kwargs: (
+            agent_router.TerminalContext(
+                command=kwargs["command"],
+                exit_code=0,
+                stdout="Hello World\n",
+                stderr="",
+                success=True,
+                timeout=False,
+            ),
+            [],
+        ),
+    )
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Run hello.py"},
+    )
+    task_id = created.json()["id"]
+    waiting = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert waiting["status"] == "awaiting_approval"
+    assert waiting["validation_command"] == "python hello.py"
+    assert waiting["tool_calls_used"] == 1
+
+    approved = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert approved.status_code == 200
+    completed = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert completed["status"] == "completed"
+    assert completed["validation_result"]["stdout"] == "Hello World\n"
+    assert "Hello World" in fake_ai.messages[1]
+
+
+def test_agent_sandbox_failure_result_is_returned_to_model(agent_db, monkeypatch):
+    responses = [
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "plan": ["The script failed with a syntax error."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ]
+    client = make_agent_client(agent_db, monkeypatch)
+    fake_ai = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+    monkeypatch.setattr(
+        agent_router,
+        "_run_project_validation_command",
+        lambda **kwargs: (
+            agent_router.TerminalContext(
+                command=kwargs["command"],
+                exit_code=1,
+                stdout="",
+                stderr="SyntaxError: invalid syntax",
+                success=False,
+                timeout=False,
+            ),
+            [],
+        ),
+    )
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Run hello.py"},
+    )
+    task_id = created.json()["id"]
+    approved = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+
+    assert approved.status_code == 200
+    completed = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert completed["status"] == "completed"
+    assert completed["validation_result"]["success"] is False
+    assert "SyntaxError: invalid syntax" in fake_ai.messages[1]
+    assert any(
+        step["status"] == "failed" and "SyntaxError" in (step["output"] or "")
+        for step in completed["steps"]
+        if step["type"] == "tool"
+    )
+
+
+def test_agent_create_approve_and_run_completes_through_real_docker(
+    agent_db,
+    monkeypatch,
+    tmp_path,
+):
+    from App.service import project_workspace_service
+    from App.service.sandbox_service import SandboxService
+
+    sandbox = SandboxService(
+        workspace_root=str(tmp_path / "workspaces"),
+        sandbox_root=str(tmp_path / "temporary" / "sandbox"),
+    )
+    if not sandbox.is_available():
+        pytest.skip("Docker sandbox image is unavailable.")
+
+    class NoopRepositoryIndexer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def index_file_after_save(self, _file):
+            pass
+
+    class NoopVectorService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def delete_files(self, _file_ids):
+            pass
+
+    monkeypatch.setattr(agent_router, "sandbox_service", sandbox)
+    monkeypatch.setattr(
+        project_workspace_service,
+        "RepositoryIndexService",
+        NoopRepositoryIndexer,
+    )
+    monkeypatch.setattr(
+        project_workspace_service,
+        "VectorRAGService",
+        NoopVectorService,
+    )
+    delete_target = ProjectFile(
+        id=13,
+        project_id=1,
+        name="delete-me.py",
+        type="file",
+        content="print('temporary')\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(delete_target)
+    agent_db.commit()
+    fake_ai = FakeAIService([
+        json.dumps({
+            "type": "tool_call",
+            "name": "create_file",
+            "arguments": {
+                "path": "hello.py",
+                "content": "print('Hello World')\n",
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "plan": ["Created hello.py and ran it successfully."],
+            "actions": [],
+            "validation_command": None,
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "update_file",
+            "arguments": {
+                "path": "hello.py",
+                "content": "print('Hello AI')\n",
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "plan": ["Updated hello.py and confirmed Hello AI output."],
+            "actions": [],
+            "validation_command": None,
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "update_file",
+            "arguments": {
+                "path": "hello.py",
+                "content": "print('broken'\n",
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "update_file",
+            "arguments": {
+                "path": "hello.py",
+                "content": "print('fixed')\n",
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "execute_command",
+            "arguments": {"command": "python hello.py"},
+        }),
+        json.dumps({
+            "plan": ["Corrected the syntax error and confirmed the script runs."],
+            "actions": [],
+            "validation_command": None,
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": "delete_file",
+            "arguments": {"path": "delete-me.py"},
+        }),
+        json.dumps({
+            "plan": ["Deleted delete-me.py after user approval."],
+            "actions": [],
+            "validation_command": None,
+        }),
+    ])
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+    client = make_agent_client(
+        agent_db,
+        monkeypatch,
+        sync_workspace=True,
+    )
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create hello.py and run it"},
+    )
+    task_id = created.json()["id"]
+    create_pending = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert create_pending["status"] == "awaiting_approval"
+
+    file_approved = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [0]},
+    )
+    assert file_approved.status_code == 200
+    command_pending = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert command_pending["status"] == "awaiting_approval"
+    assert command_pending["validation_command"] == "python hello.py"
+
+    command_approved = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert command_approved.status_code == 200
+    completed = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert completed["status"] == "completed"
+    assert completed["validation_result"]["stdout"].strip() == "Hello World"
+    assert any(
+        "Hello World" in step["output"]
+        for step in completed["steps"]
+        if step["type"] == "tool"
+    )
+    assert len(fake_ai.messages) == 3
+    project_file = (
+        agent_db.query(ProjectFile)
+        .filter(
+            ProjectFile.project_id == 1,
+            ProjectFile.name == "hello.py",
+        )
+        .one()
+    )
+    assert project_file.content == "print('Hello World')\n"
+    assert (
+        sandbox.get_project_directory(1) / "hello.py"
+    ).read_text(encoding="utf-8") == project_file.content
+
+    update_created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update hello.py and run it again"},
+    )
+    update_id = update_created.json()["id"]
+    update_pending = client.get(f"/ai/agent/tasks/{update_id}").json()
+    assert update_pending["status"] == "awaiting_approval"
+    assert client.post(
+        f"/ai/agent/tasks/{update_id}/approve",
+        json={"action_indexes": [0]},
+    ).status_code == 200
+    update_command = client.get(f"/ai/agent/tasks/{update_id}").json()
+    assert update_command["status"] == "awaiting_approval"
+    update_result = client.post(
+        f"/ai/agent/tasks/{update_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert update_result.status_code == 200
+    update_completed = client.get(f"/ai/agent/tasks/{update_id}").json()
+    assert update_completed["status"] == "completed"
+    assert update_completed["validation_result"]["stdout"].strip() == "Hello AI"
+    assert agent_db.get(ProjectFile, project_file.id).content == "print('Hello AI')\n"
+    assert (
+        sandbox.get_project_directory(1) / "hello.py"
+    ).read_text(encoding="utf-8") == "print('Hello AI')\n"
+
+    correction_created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Break hello.py, test it, fix the syntax error, and rerun"},
+    )
+    correction_id = correction_created.json()["id"]
+    broken_change = client.get(f"/ai/agent/tasks/{correction_id}").json()
+    assert broken_change["status"] == "awaiting_approval"
+    client.post(
+        f"/ai/agent/tasks/{correction_id}/approve",
+        json={"action_indexes": [0]},
+    )
+    failed_command = client.get(f"/ai/agent/tasks/{correction_id}").json()
+    assert failed_command["status"] == "awaiting_approval"
+    failed_result = client.post(
+        f"/ai/agent/tasks/{correction_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert failed_result.status_code == 200
+    corrected_change = client.get(f"/ai/agent/tasks/{correction_id}").json()
+    assert corrected_change["status"] == "awaiting_approval"
+    assert any(
+        step["status"] == "failed"
+        and "SyntaxError" in (step["output"] or "")
+        for step in corrected_change["steps"]
+        if step["type"] == "tool"
+    )
+    correction_approved = client.post(
+        f"/ai/agent/tasks/{correction_id}/approve",
+        json={"action_indexes": [1]},
+    )
+    assert correction_approved.status_code == 200
+    corrected_command = client.get(f"/ai/agent/tasks/{correction_id}").json()
+    assert corrected_command["status"] == "awaiting_approval"
+    assert corrected_command["validation_command"] == "python hello.py"
+    rerun = client.post(
+        f"/ai/agent/tasks/{correction_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert rerun.status_code == 200
+    correction_completed = client.get(f"/ai/agent/tasks/{correction_id}").json()
+    assert correction_completed["status"] == "completed"
+    assert correction_completed["validation_result"]["stdout"].strip() == "fixed"
+    assert agent_db.get(ProjectFile, project_file.id).content == "print('fixed')\n"
+    assert (
+        sandbox.get_project_directory(1) / "hello.py"
+    ).read_text(encoding="utf-8") == "print('fixed')\n"
+
+    delete_created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Delete delete-me.py"},
+    )
+    delete_id = delete_created.json()["id"]
+    delete_pending = client.get(f"/ai/agent/tasks/{delete_id}").json()
+    assert delete_pending["status"] == "awaiting_approval"
+    assert agent_db.get(ProjectFile, 13) is not None
+    assert (
+        sandbox.get_project_directory(1) / "delete-me.py"
+    ).is_file()
+    deleted = client.post(
+        f"/ai/agent/tasks/{delete_id}/approve",
+        json={"action_indexes": [0]},
+    )
+    assert deleted.status_code == 200
+    delete_completed = client.get(f"/ai/agent/tasks/{delete_id}").json()
+    assert delete_completed["status"] == "completed"
+    assert agent_db.get(ProjectFile, 13) is None
+    assert not (
+        sandbox.get_project_directory(1) / "delete-me.py"
+    ).exists()
+    repeated_delete_approval = client.post(
+        f"/ai/agent/tasks/{delete_id}/approve",
+        json={"action_indexes": [0]},
+    )
+    assert repeated_delete_approval.status_code == 409
+    repeated_command_approval = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python hello.py", "approved": True},
+    )
+    assert repeated_command_approval.status_code == 409
+    assert len(fake_ai.messages) == 13
+
+
 def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkeypatch):
     correction = {
         **action_payload(),
@@ -982,14 +1812,47 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
     ]
     client = make_agent_client(agent_db, monkeypatch)
     monkeypatch.setattr(agent_router, "ai_service", FakeAIService(responses))
+    monkeypatch.setattr(agent_router.sandbox_service, "is_available", lambda: True)
     terminal_results = iter([
-        type("Result", (), {"exit_code": 1, "stdout": "", "stderr": "assertion failed", "success": False})(),
-        type("Result", (), {"exit_code": 0, "stdout": "2 passed", "stderr": "", "success": True})(),
+        SimpleNamespace(
+            exit_code=1,
+            stdout="",
+            stderr="assertion failed",
+            success=False,
+            timeout=False,
+            created_files=[],
+            modified_files=[],
+            deleted_files=[],
+        ),
+        SimpleNamespace(
+            exit_code=0,
+            stdout="2 passed",
+            stderr="",
+            success=True,
+            timeout=False,
+            created_files=[],
+            modified_files=[],
+            deleted_files=[],
+        ),
     ])
+    def fake_project_validation(db, project_id, user_id, command, timeout_seconds=120):
+        result = next(terminal_results)
+        return (
+            agent_router.TerminalContext(
+                command=command,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                success=result.success,
+                timeout=result.timeout,
+            ),
+            [],
+        )
+
     monkeypatch.setattr(
-        agent_router.terminal_service,
-        "execute_command",
-        lambda project_id, command, timeout_seconds: next(terminal_results),
+        agent_router,
+        "_run_project_validation_command",
+        fake_project_validation,
     )
 
     created = client.post(

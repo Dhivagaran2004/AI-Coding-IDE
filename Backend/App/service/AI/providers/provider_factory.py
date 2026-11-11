@@ -1,12 +1,11 @@
 from App.config import (
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
 )
 
 from App.service.AI.providers.base_provider import BaseLLMProvider
+from App.service.AI.providers.groq_provider import GroqProvider
 from App.service.AI.providers.mock_provider import MockLLMProvider
-from App.service.AI.providers.qwen_provider import QwenProvider
 
 
 def get_llm_provider(provider_name: str) -> BaseLLMProvider:
@@ -19,12 +18,10 @@ def get_llm_provider(provider_name: str) -> BaseLLMProvider:
     if provider == "mock":
         return MockLLMProvider()
 
-    if provider == "qwen":
-        return QwenProvider(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-        )
+    if provider == "groq":
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY is required when LLM_PROVIDER=groq.")
+        return GroqProvider(model=GROQ_MODEL, api_key=GROQ_API_KEY)
 
     raise ValueError(
         f"Unsupported LLM provider: {provider_name}"

@@ -41,12 +41,14 @@ export type AgentTask = {
     task: string;
     mode: "agent";
     status: "pending" | "planning" | "awaiting_approval" | "executing" | "validating" | "paused" | "failed" | "completed" | "cancelled";
+    updated_at: string;
     plan: string[];
     actions: {
         action: CodeAction;
         status: "awaiting_approval" | "applied" | "reverted" | "rejected" | "failed";
         error?: string | null;
     }[];
+    tool_calls_used: number;
     validation_command?: string | null;
     validation_result?: TerminalAIContext | null;
     steps: {
@@ -60,7 +62,7 @@ export type AgentTask = {
     }[];
     stop_reason?: string | null;
     iteration: number;
-    changes?: { path: string; content: string; file_id: number }[];
+    changes?: { path: string; content: string; file_id: number; deleted?: boolean }[];
     change_history: { rolled_back?: boolean }[];
 };
 

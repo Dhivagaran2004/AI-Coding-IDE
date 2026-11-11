@@ -17,9 +17,16 @@ class CodeChunk:
 class CodeChunker:
     SECRET_CONTENT_PATTERNS = (
         re.compile(
-            r"(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|"
-            r"access[_-]?token|refresh[_-]?token|credential|authorization|"
-            r"database_url)\b\s*[:=]\s*[\"']?[A-Za-z0-9_./+=:@-]{12,}"
+            r"""(?ix)
+            \b(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|
+            access[_-]?token|refresh[_-]?token|credential|authorization|
+            database_url)\b\s*[:=]\s*
+            (?:
+                ["'][^"'\r\n]{8,}["']
+                |
+                [A-Za-z0-9_./+=:@-]{20,}(?=\s*(?:\#.*)?$)
+            )
+            """
         ),
         re.compile(
             r"\b(?:hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"

@@ -2,6 +2,7 @@ import re
 from pathlib import PurePosixPath
 from typing import cast
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from App.models.project import Project
@@ -12,6 +13,40 @@ from App.service.AI.index.vector_rag_service import VectorRAGService
 
 
 class AgentToolError(ValueError):
+    pass
+
+
+class AgentToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ListFilesArguments(AgentToolArguments):
+    path: str = Field(default="", max_length=2000)
+
+
+class ReadFileArguments(AgentToolArguments):
+    path: str = Field(min_length=1, max_length=2000)
+
+
+class CreateFileArguments(AgentToolArguments):
+    path: str = Field(min_length=1, max_length=2000)
+    content: str = Field(max_length=20000)
+
+
+class UpdateFileArguments(AgentToolArguments):
+    path: str = Field(min_length=1, max_length=2000)
+    content: str = Field(max_length=20000)
+
+
+class DeleteFileArguments(AgentToolArguments):
+    path: str = Field(min_length=1, max_length=2000)
+
+
+class ExecuteCommandArguments(AgentToolArguments):
+    command: str = Field(min_length=1, max_length=500)
+
+
+class GetExecutionResultArguments(AgentToolArguments):
     pass
 
 
@@ -40,14 +75,6 @@ class AgentTools:
         "using",
         "with",
     }
-    SECRET_CONTENT = re.compile(
-        r"(?i)(?:api[_-]?key|secret(?:[_-]?key)?|password|passwd|"
-        r"access[_-]?token|refresh[_-]?token|credential)\s*[:=]|"
-        r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|"
-        r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b|"
-        r"\b(?:hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"
-        r"github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
-    )
     SECRET_NAME_MARKERS = ("secret", "credential", "password", "private_key")
     PYTHON_IMPORT = re.compile(
         r"(?m)^\s*(?:from\s+([\w.]+)\s+import\s+([\w*., ]+)|"
@@ -89,12 +116,53 @@ class AgentTools:
                 result.append(path)
         return result
 
+    def list_project_entries(self, directory: str = "") -> list[dict[str, str]]:
+        normalized_directory = ""
+        if directory not in {"", "."}:
+            normalized_directory = self._validate_path(directory)
+            folder = (
+                self.db.query(ProjectFile)
+                .filter(
+                    ProjectFile.project_id == self.project_id,
+                    ProjectFile.type == "folder",
+                )
+                .all()
+            )
+            if not any(
+                self.get_file_path(item) == normalized_directory
+                and self.is_safe_path(normalized_directory)
+                for item in folder
+            ):
+                raise AgentToolError("Directory not found in this project.")
+
+        entries: list[dict[str, str]] = []
+        items = (
+            self.db.query(ProjectFile)
+            .filter(ProjectFile.project_id == self.project_id)
+            .order_by(ProjectFile.id.asc())
+            .all()
+        )
+        for item in items:
+            path = self.get_file_path(item)
+            if not self.is_safe_path(path):
+                continue
+            parent_path = PurePosixPath(path).parent.as_posix()
+            if parent_path == ".":
+                parent_path = ""
+            if parent_path != normalized_directory:
+                continue
+            entries.append({
+                "path": path,
+                "type": cast(str, item.type),
+            })
+        return entries
+
     def inspect_file(self, file_path: str) -> dict[str, object]:
         project_file = self.resolve_file(file_path)
         content = cast(str | None, project_file.content) or ""
         if len(content) > self.MAX_INSPECT_CHARS:
             raise AgentToolError("File exceeds the agent inspection limit.")
-        if self.SECRET_CONTENT.search(content):
+        if self.contains_sensitive_content(content):
             raise AgentToolError("File content is protected from agent access.")
         return {
             "path": file_path,
@@ -126,7 +194,7 @@ class AgentTools:
         for project_file in files:
             path = self.get_file_path(project_file)
             content = cast(str | None, project_file.content) or ""
-            if not self.is_safe_path(path) or self.SECRET_CONTENT.search(content):
+            if not self.is_safe_path(path) or self.contains_sensitive_content(content):
                 continue
             folded_path = path.casefold()
             folded_content = content.casefold()
@@ -201,7 +269,10 @@ class AgentTools:
 
         for source_path, project_file in safe_files:
             content = cast(str | None, project_file.content) or ""
-            if len(content) > self.MAX_INSPECT_CHARS or self.SECRET_CONTENT.search(content):
+            if (
+                len(content) > self.MAX_INSPECT_CHARS
+                or self.contains_sensitive_content(content)
+            ):
                 continue
             references: set[str] = set()
             for match in self.PYTHON_IMPORT.finditer(content):
@@ -266,7 +337,10 @@ class AgentTools:
         context_sections = []
         context_size = 0
         for result in relevance.search_results:
-            if not self.is_safe_path(result.path) or self.SECRET_CONTENT.search(result.content):
+            if (
+                not self.is_safe_path(result.path)
+                or self.contains_sensitive_content(result.content)
+            ):
                 continue
             section = f"FILE: {result.path}\n{result.content[:6000]}"
             if context_size + len(section) > 20000:
@@ -284,7 +358,10 @@ class AgentTools:
         vector_sections = []
         vector_size = 0
         for chunk in vector_result.chunks:
-            if not self.is_safe_path(chunk.file_path) or self.SECRET_CONTENT.search(chunk.content):
+            if (
+                not self.is_safe_path(chunk.file_path)
+                or self.contains_sensitive_content(chunk.content)
+            ):
                 continue
             section = (
                 f"FILE: {chunk.file_path} LINES: {chunk.start_line}-{chunk.end_line}\n"
@@ -352,9 +429,16 @@ class AgentTools:
 
     @classmethod
     def is_safe_path(cls, path: str) -> bool:
-        name = PurePosixPath(path).name.lower()
+        lowered_parts = [part.lower() for part in PurePosixPath(path).parts]
         return (
             CodeChunker.is_indexable_path(path)
-            and not name.startswith(".env")
-            and not any(marker in name for marker in cls.SECRET_NAME_MARKERS)
+            and not any(
+                part.startswith(".env")
+                or any(marker in part for marker in cls.SECRET_NAME_MARKERS)
+                for part in lowered_parts
+            )
         )
+
+    @classmethod
+    def contains_sensitive_content(cls, content: str | None) -> bool:
+        return CodeChunker.contains_sensitive_content(content)

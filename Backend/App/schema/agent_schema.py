@@ -36,6 +36,7 @@ class AgentChangeResult(BaseModel):
     path: str
     content: str
     file_id: int
+    deleted: bool = False
 
 
 class AgentTaskResponse(BaseModel):
@@ -65,3 +66,4 @@ class AgentTaskResponse(BaseModel):
     created_at: str
     updated_at: str
     changes: list[AgentChangeResult] = Field(default_factory=list)
+    tool_calls_used: int = 0

@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import cast
 
@@ -8,7 +10,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from App.api.ai_router import ai_service
-from App.api.terminal_router import terminal_service
 from App.auth.auth import get_current_user
 from App.database.database import SessionLocal, get_db
 from App.models.project import Project
@@ -22,13 +23,29 @@ from App.schema.agent_schema import (
 )
 from App.schema.ai_schema import CodeAction, TerminalContext
 from App.service.AI.agent.agent_task_service import (
+    AI_AGENT_MAX_TOOL_CALLS,
+    ACTIVE_AGENT_TASK_STATUSES,
     MAX_AGENT_ITERATIONS,
+    MAX_AGENT_OUTPUT_CHARS,
+    TERMINAL_AGENT_TASK_STATUSES,
+    WAITING_AGENT_TASK_STATUSES,
+    AgentToolCall,
     AgentTask,
     AgentTaskStore,
     TaskPlanner,
     validate_agent_command,
 )
-from App.service.AI.agent.agent_tools import AgentToolError, AgentTools
+from App.service.AI.agent.agent_tools import (
+    AgentToolError,
+    AgentTools,
+    CreateFileArguments,
+    DeleteFileArguments,
+    ExecuteCommandArguments,
+    GetExecutionResultArguments,
+    ListFilesArguments,
+    ReadFileArguments,
+    UpdateFileArguments,
+)
 from App.service.AI.code_action_service import (
     CodeActionService,
     MAX_RESULTING_FILE_CHARS,
@@ -39,11 +56,17 @@ from App.service.AI.code_action_service import (
     UnsupportedPatchOperation,
 )
 from App.service.AI.index.repository_index_service import RepositoryIndexService
+from App.service.project_workspace_service import (
+    ProjectWorkspaceService,
+    ProjectWorkspaceSyncError,
+)
+from App.service.sandbox_service import SandboxService
 
 
 router = APIRouter(prefix="/ai/agent", tags=["AI Agent"])
 logger = logging.getLogger(__name__)
 agent_tasks = AgentTaskStore(SessionLocal)
+sandbox_service = SandboxService()
 
 
 def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
@@ -60,14 +83,374 @@ def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
     return task
 
 
+def _run_validation_command(project_id: int, command: str, timeout_seconds: int = 120) -> TerminalContext:
+    sandbox_enabled = os.getenv("ENABLE_SANDBOX", "true").lower() not in {"0", "false", "no"}
+    if not sandbox_enabled or not sandbox_service.is_available():
+        return TerminalContext(
+            command=command,
+            exit_code=127,
+            stderr=(
+                "Docker sandbox is unavailable; the approved command "
+                "was not executed on the host."
+            ),
+            success=False,
+        )
+
+    result = sandbox_service.execute(project_id, command, timeout=timeout_seconds)
+    return TerminalContext(
+        command=command,
+        exit_code=result.exit_code,
+        stdout=result.stdout[:12000],
+        stderr=result.stderr[:12000],
+        success=result.success,
+        timeout=result.timeout,
+        created_files=result.created_files,
+        modified_files=result.modified_files,
+        deleted_files=result.deleted_files,
+    )
+
+
+def _run_project_validation_command(
+    db: Session,
+    project_id: int,
+    user_id: int,
+    command: str,
+    timeout_seconds: int = 120,
+) -> tuple[TerminalContext, list[dict[str, object]]]:
+    sandbox_enabled = os.getenv("ENABLE_SANDBOX", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    if not sandbox_enabled or not sandbox_service.is_available():
+        return (
+            _run_validation_command(project_id, command, timeout_seconds),
+            [],
+        )
+
+    result, changes = ProjectWorkspaceService(
+        db,
+        sandbox_service=sandbox_service,
+    ).execute_command(
+        project_id=project_id,
+        user_id=user_id,
+        command=command,
+        timeout=timeout_seconds,
+    )
+    return (
+        TerminalContext(
+            command=command,
+            exit_code=result.exit_code,
+            stdout=result.stdout[:12000],
+            stderr=result.stderr[:12000],
+            success=result.success,
+            timeout=result.timeout,
+            created_files=result.created_files,
+            modified_files=result.modified_files,
+            deleted_files=result.deleted_files,
+        ),
+        changes,
+    )
+
+
+def _dispatch_agent_tool(
+    task: AgentTask,
+    tools: AgentTools,
+    name: str,
+    raw_arguments: dict[str, object],
+) -> tuple[dict[str, object], CodeAction | None, str | None]:
+    argument_models = {
+        "list_files": ListFilesArguments,
+        "read_file": ReadFileArguments,
+        "create_file": CreateFileArguments,
+        "update_file": UpdateFileArguments,
+        "delete_file": DeleteFileArguments,
+        "execute_command": ExecuteCommandArguments,
+        "get_execution_result": GetExecutionResultArguments,
+    }
+    argument_model = argument_models.get(name)
+    if argument_model is None:
+        return {"success": False, "error": f"Unknown tool: {name}."}, None, None
+
+    try:
+        arguments = argument_model.model_validate(raw_arguments)
+    except ValueError as error:
+        return {
+            "success": False,
+            "error": f"Invalid arguments for {name}: {str(error)[:500]}",
+        }, None, None
+
+    try:
+        if isinstance(arguments, ListFilesArguments):
+            return {
+                "success": True,
+                "entries": tools.list_project_entries(arguments.path),
+            }, None, None
+        if isinstance(arguments, ReadFileArguments):
+            return {"success": True, **tools.inspect_file(arguments.path)}, None, None
+        if isinstance(arguments, CreateFileArguments):
+            path = AgentTools._validate_path(arguments.path)
+            if path in tools.list_project_files():
+                return {
+                    "success": False,
+                    "error": "A file already exists at this path.",
+                }, None, None
+            action = CodeAction(
+                type="code_change",
+                operation="create_file",
+                file_path=path,
+                description=f"Create {path}",
+                new_code=arguments.content,
+            )
+            return {
+                "success": True,
+                "status": "awaiting_user_approval",
+                "path": path,
+            }, action, None
+        if isinstance(arguments, UpdateFileArguments):
+            file_data = tools.inspect_file(arguments.path)
+            current = str(file_data["content"])
+            if len(current) > 20000:
+                return {
+                    "success": False,
+                    "error": "The file exceeds the agent update limit.",
+                }, None, None
+            line_count = max(1, len(current.splitlines()))
+            action = CodeAction(
+                type="code_change",
+                operation="replace",
+                file_path=arguments.path,
+                description=f"Update {arguments.path}",
+                start_line=1,
+                end_line=line_count,
+                old_code=current,
+                new_code=arguments.content,
+            )
+            return {
+                "success": True,
+                "status": "awaiting_user_approval",
+                "path": arguments.path,
+            }, action, None
+        if isinstance(arguments, DeleteFileArguments):
+            file_data = tools.inspect_file(arguments.path)
+            current = str(file_data["content"])
+            action = CodeAction(
+                type="code_change",
+                operation="delete",
+                file_path=arguments.path,
+                description=f"Delete {arguments.path}",
+                start_line=1,
+                end_line=max(1, len(current.splitlines())),
+                old_code=current,
+                new_code="",
+            )
+            return {
+                "success": True,
+                "status": "awaiting_user_approval",
+                "path": arguments.path,
+                "requires_confirmation": True,
+            }, action, None
+        if isinstance(arguments, ExecuteCommandArguments):
+            command = validate_agent_command(arguments.command)
+            return {
+                "success": True,
+                "status": "awaiting_user_approval",
+                "command": command,
+            }, None, command
+        if isinstance(arguments, GetExecutionResultArguments):
+            if task.validation_result is None:
+                return {
+                    "success": False,
+                    "error": "No sandbox execution result is available yet.",
+                }, None, None
+            return {
+                "success": True,
+                "result": task.validation_result,
+            }, None, None
+    except (AgentToolError, ValueError) as error:
+        return {"success": False, "error": str(error)[:1000]}, None, None
+
+    return {"success": False, "error": "Tool arguments were not handled."}, None, None
+
+
+async def _request_plan_with_tools(
+    task: AgentTask,
+    tools: AgentTools,
+    context: str,
+    plan_step,
+) -> str | None:
+    message = TaskPlanner.tool_prompt(task.task, task.tool_history)
+    response = await ai_service.chat_json(
+        message=message,
+        context=context or "No relevant repository context was found.",
+        history=[],
+    )
+    plan_step.output = response
+    task.persist()
+
+    while True:
+        try:
+            tool_call = TaskPlanner.parse_tool_call(response)
+        except ValueError as error:
+            task.tool_protocol_active = True
+            task.tool_calls_used += 1
+            result = {
+                "success": False,
+                "error": str(error),
+            }
+            task.tool_history.append({
+                "name": "invalid_tool_call",
+                "arguments": {},
+                "result": result,
+            })
+            task.add_step(
+                "tool",
+                "failed",
+                "Rejected malformed tool call",
+                output=json.dumps(result),
+            )
+            if task.tool_calls_used >= AI_AGENT_MAX_TOOL_CALLS:
+                raise ValueError(
+                    "The agent reached its tool-call limit while recovering from malformed calls."
+                )
+            response = await ai_service.chat_json(
+                message=TaskPlanner.tool_prompt(task.task, task.tool_history),
+                context=context or "No relevant repository context was found.",
+                history=[],
+            )
+            plan_step.output = response
+            task.persist()
+            continue
+
+        if tool_call is None:
+            return response
+        if task.tool_calls_used >= AI_AGENT_MAX_TOOL_CALLS:
+            raise ValueError(
+                f"The agent reached the configured limit of {AI_AGENT_MAX_TOOL_CALLS} tool calls."
+            )
+
+        task.tool_protocol_active = True
+        task.tool_calls_used += 1
+        result, proposed_action, proposed_command = _dispatch_agent_tool(
+            task,
+            tools,
+            tool_call.name,
+            tool_call.arguments,
+        )
+        history_entry = {
+            "name": tool_call.name,
+            "arguments": tool_call.arguments,
+            "result": result,
+        }
+        task.tool_history.append(history_entry)
+        task.add_step(
+            "tool",
+            "completed" if result.get("success") else "failed",
+            f"{tool_call.name} {'completed' if result.get('success') else 'failed'}",
+            input=json.dumps(tool_call.arguments, ensure_ascii=True)[:2000],
+            output=json.dumps(result, ensure_ascii=True)[:MAX_AGENT_OUTPUT_CHARS],
+            error=None if result.get("success") else str(result.get("error", "")),
+        )
+
+        if proposed_action is not None:
+            if len(task.actions) >= 10:
+                raise ValueError("The agent exceeded the maximum number of proposed changes.")
+            task.actions.append({
+                "action": proposed_action.model_dump(),
+                "status": "awaiting_approval",
+                "error": None,
+            })
+            task.plan = [
+                f"Review the proposed {proposed_action.operation} for {proposed_action.file_path}."
+            ]
+            task.status = "awaiting_approval"
+            task.persist()
+            return None
+        if proposed_command is not None:
+            task.validation_command = proposed_command
+            task.plan = ["Review and approve the proposed sandbox command."]
+            task.status = "awaiting_approval"
+            task.persist()
+            return None
+
+        response = await ai_service.chat_json(
+            message=TaskPlanner.tool_prompt(task.task, task.tool_history),
+            context=context or "No relevant repository context was found.",
+            history=[],
+        )
+        plan_step.output = response
+        task.persist()
+
+
 async def _plan_task(task_id: str, user_id: int) -> None:
+    task = agent_tasks.get(task_id, user_id)
+    if (
+        task is None
+        or task.status in TERMINAL_AGENT_TASK_STATUSES
+        or task.status in WAITING_AGENT_TASK_STATUSES
+    ):
+        return
+    task = agent_tasks.claim_worker(task_id, user_id)
+    if task is None:
+        return
+    try:
+        if task.status == "pending":
+            if agent_tasks.transition(
+                task.id,
+                user_id,
+                "pending",
+                "planning",
+            ) is None:
+                return
+        await _run_planning_task(task_id, user_id)
+    except asyncio.CancelledError:
+        if task.status in ACTIVE_AGENT_TASK_STATUSES:
+            task.status = "paused"
+            task.stop_reason = "Agent worker was interrupted; review completed steps before resuming."
+            task.add_step(
+                "recovery",
+                "failed",
+                "Agent worker was interrupted",
+                error=task.stop_reason,
+            )
+        raise
+    except Exception as error:
+        logger.exception("Agent planning worker exited unexpectedly for task %s", task_id)
+        if task.status not in TERMINAL_AGENT_TASK_STATUSES:
+            task.status = "failed"
+            task.stop_reason = str(error)[:1000]
+            task.add_step(
+                "finish",
+                "failed",
+                "Agent planning worker failed",
+                error=str(error),
+            )
+    finally:
+        if task.status in ACTIVE_AGENT_TASK_STATUSES:
+            task.status = "failed"
+            task.stop_reason = (
+                "Agent planning worker exited without completing or waiting for approval."
+            )
+            task.add_step(
+                "finish",
+                "failed",
+                "Agent planning worker exited unexpectedly",
+                error=task.stop_reason,
+            )
+        try:
+            task.persist()
+        finally:
+            agent_tasks.release_worker(task_id)
+
+
+async def _run_planning_task(task_id: str, user_id: int) -> None:
     task = agent_tasks.get(task_id, user_id)
     if task is None or getattr(task, "status", None) == "cancelled":
         return
-    task.status = "planning"
-    task.add_step("retrieve", "running", "Retrieving project context")
-    db = SessionLocal()
+    db: Session | None = None
     try:
+        task.add_step("retrieve", "running", "Retrieving project context")
+        db = SessionLocal()
         tools = AgentTools(db, task.project_id, user_id)
         file_paths = tools.list_project_files()[:100]
         matches = tools.search_project(task.task)[:8]
@@ -96,9 +479,15 @@ async def _plan_task(task_id: str, user_id: int) -> None:
             inspected.append(f"FILE: {path}\n{str(file_data['content'])[:4500]}")
             task.add_step("inspect", "completed", f"Inspected {path}")
         context = tools.retrieve_context(task.task)[:30000]
-        tree = "PROJECT FILES:\n" + "\n".join(file_paths)
-        if tree:
+        if file_paths:
+            tree = "PROJECT FILES:\n" + "\n".join(file_paths)
             context = f"{tree}\n\n{context}"
+        else:
+            context = (
+                "PROJECT STATE: This project is empty. New files may be created to "
+                "implement the task. Use create_file actions for the required new files.\n\n"
+                f"{context}"
+            )
         if relationships:
             relationship_lines = [
                 f"{source} -> {target}" for source, target in relationships
@@ -126,11 +515,17 @@ async def _plan_task(task_id: str, user_id: int) -> None:
             "Generating implementation plan",
             input="Preparing a plan and proposed changes from project context",
         )
-        response = await ai_service.chat(
-            message=TaskPlanner.prompt(task.task),
-            context=context or "No relevant repository context was found.",
-            history=[],
+        response = await _request_plan_with_tools(
+            task,
+            tools,
+            context,
+            plan_step,
         )
+        if response is None:
+            plan_step.status = "completed"
+            plan_step.output = "Waiting for the requested user approval."
+            task.persist()
+            return
         plan_step.status = "completed"
         plan_step.output = response
         task.persist()
@@ -150,7 +545,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                 )
                 if getattr(task, "status", None) == "cancelled":
                     return
-                response = await ai_service.chat(
+                response = await ai_service.chat_json(
                     message=TaskPlanner.repair_prompt(
                         task.task, response, str(last_error)
                     ),
@@ -169,7 +564,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                     last_error = repair_error
             else:
                 raise last_error
-        if not actions and not command:
+        if not actions and not command and not task.tool_protocol_active:
             previous_response = response
             for attempt in range(2):
                 retry_step = task.add_step(
@@ -180,7 +575,7 @@ async def _plan_task(task_id: str, user_id: int) -> None:
                 )
                 if getattr(task, "status", None) == "cancelled":
                     return
-                response = await ai_service.chat(
+                response = await ai_service.chat_json(
                     message=TaskPlanner.missing_actions_prompt(
                         task.task, previous_response
                     ),
@@ -199,8 +594,14 @@ async def _plan_task(task_id: str, user_id: int) -> None:
 
         if not actions and not command:
             task.plan = plan
-            task.actions = []
             task.validation_command = None
+            if task.tool_protocol_active:
+                task.status = "completed"
+                task.stop_reason = "The agent completed without proposing additional changes."
+                task.add_step("finish", "completed", task.stop_reason)
+                task.persist()
+                return
+            task.actions = []
             task.status = "failed"
             task.stop_reason = (
                 "The agent could not prepare a code change from the available "
@@ -215,13 +616,27 @@ async def _plan_task(task_id: str, user_id: int) -> None:
             )
             return
         for action in actions:
+            if action.operation == "create_file":
+                if action.file_path in tools.list_project_files():
+                    raise ValueError("Agent create_file action path already exists in the project.")
+                continue
             target = tools.resolve_file(action.file_path)
             if tools.get_file_path(target) != action.file_path:
                 raise ValueError("Agent action path does not match the project file.")
         task.plan = plan
-        task.actions = []
+        previous_actions = task.actions if task.tool_protocol_active else []
+        task.actions = list(previous_actions)
+        if len(task.actions) + len(actions) > 10:
+            raise ValueError("The agent exceeded the maximum number of proposed changes.")
         for action in actions:
-            project_file = tools.resolve_file(action.file_path)
+            if action.operation == "create_file":
+                task.actions.append({
+                    "action": action.model_dump(),
+                    "status": "awaiting_approval",
+                    "error": None,
+                })
+                continue
+            tools.resolve_file(action.file_path)
             task.actions.append({
                 "action": action.model_dump(),
                 "status": "awaiting_approval",
@@ -244,7 +659,8 @@ async def _plan_task(task_id: str, user_id: int) -> None:
         task.stop_reason = str(error)[:1000]
         task.add_step("finish", "failed", "Agent planning failed", error=str(error))
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 @router.post("/tasks", status_code=202, response_model=AgentTaskResponse)
@@ -270,14 +686,14 @@ def create_agent_task(
     if (
         request.context
         and current_file_is_safe
-        and not AgentTools.SECRET_CONTENT.search(request.context)
+        and not AgentTools.contains_sensitive_content(request.context)
     ):
         current_context_parts.append(request.context[:20000])
     if request.selected_code:
         selected = request.selected_code
         if (
             AgentTools.is_safe_path(selected.file_path)
-            and not AgentTools.SECRET_CONTENT.search(selected.code)
+            and not AgentTools.contains_sensitive_content(selected.code)
         ):
             current_context_parts.append(
                 f"SELECTED CODE: {selected.file_path}:{selected.start_line}-{selected.end_line}\n"
@@ -339,6 +755,7 @@ def get_agent_task(
 def approve_agent_changes(
     task_id: str,
     request: AgentApproval,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -366,6 +783,18 @@ def approve_agent_changes(
                 raise HTTPException(status_code=409, detail="Task approval is already being processed.")
             for index in rejected:
                 task.actions[index]["status"] = "rejected"
+                if task.tool_protocol_active:
+                    rejected_action = CodeAction.model_validate(
+                        task.actions[index]["action"]
+                    )
+                    task.tool_history.append({
+                        "name": f"{rejected_action.operation}_approval",
+                        "arguments": {"path": rejected_action.file_path},
+                        "result": {
+                            "success": False,
+                            "status": "rejected_by_user",
+                        },
+                    })
             task.status = "awaiting_approval"
             task.add_step("code_action", "completed", "Changes rejected by user")
         if not task.validation_command and not any(
@@ -384,6 +813,15 @@ def approve_agent_changes(
                     failed_action.get("error")
                     or "An approved change could not be applied."
                 )
+            elif task.tool_protocol_active:
+                task.status = "planning"
+                task.stop_reason = None
+                task.add_step(
+                    "tool",
+                    "completed",
+                    "Resuming the agent after the rejected file operation",
+                )
+                background_tasks.add_task(_plan_task, task.id, user_id)
             else:
                 task.status = "completed"
                 task.stop_reason = "All proposed changes were rejected."
@@ -395,6 +833,18 @@ def approve_agent_changes(
         raise HTTPException(status_code=409, detail="Task approval is already being processed.")
     for index in rejected:
         task.actions[index]["status"] = "rejected"
+        if task.tool_protocol_active:
+            rejected_action = CodeAction.model_validate(
+                task.actions[index]["action"]
+            )
+            task.tool_history.append({
+                "name": f"{rejected_action.operation}_approval",
+                "arguments": {"path": rejected_action.file_path},
+                "result": {
+                    "success": False,
+                    "status": "rejected_by_user",
+                },
+            })
     task.add_step("code_action", "running", "Applying approved changes")
     tools = AgentTools(db, task.project_id, user_id)
     change_results: list[dict[str, object]] = []
@@ -404,18 +854,77 @@ def approve_agent_changes(
         item = task.actions[index]
         action = CodeAction.model_validate(item["action"])
         try:
-            project_file = tools.resolve_file(action.file_path)
-            old_content = project_file.content or ""
-            updated_file = CodeActionService(db).apply_action(
+            if action.operation == "delete":
+                project_file = tools.resolve_file(action.file_path)
+                file_id = cast(int, project_file.id)
+                old_content = project_file.content or ""
+                CodeActionService(db).delete_file(
+                    project_id=task.project_id,
+                    file_id=file_id,
+                    user_id=user_id,
+                    action=cast(PatchAction, action),
+                )
+                ProjectWorkspaceService(
+                    db,
+                    sandbox_service=sandbox_service,
+                ).sync_file(
+                    project_id=task.project_id,
+                    user_id=user_id,
+                    file_path=action.file_path,
+                    content=None,
+                )
+                item["status"] = "applied"
+                deleted_change = {
+                    "path": action.file_path,
+                    "content": "",
+                    "file_id": file_id,
+                    "deleted": True,
+                }
+                change_results.append(deleted_change)
+                task.changes.append(deleted_change)
+                if task.tool_protocol_active:
+                    task.tool_history.append({
+                        "name": "delete_file_approval",
+                        "arguments": {"path": action.file_path},
+                        "result": {
+                            "success": True,
+                            "status": "applied",
+                            "path": action.file_path,
+                        },
+                    })
+                task.persist()
+                continue
+            if action.operation == "create_file":
+                updated_file = CodeActionService(db).apply_action(
+                    project_id=task.project_id,
+                    file_id=None,
+                    user_id=user_id,
+                    action=cast(PatchAction, action),
+                )
+                old_content = ""
+            else:
+                project_file = tools.resolve_file(action.file_path)
+                old_content = project_file.content or ""
+                updated_file = CodeActionService(db).apply_action(
+                    project_id=task.project_id,
+                    file_id=cast(int, project_file.id),
+                    user_id=user_id,
+                    action=cast(PatchAction, action),
+                )
+            ProjectWorkspaceService(
+                db,
+                sandbox_service=sandbox_service,
+            ).sync_file(
                 project_id=task.project_id,
-                file_id=cast(int, project_file.id),
                 user_id=user_id,
-                action=cast(PatchAction, action),
+                file_path=action.file_path,
+                content=updated_file.content or "",
             )
             item["status"] = "applied"
             task.change_history.append({
                 "path": action.file_path,
                 "file_id": updated_file.id,
+                "operation": action.operation,
                 "old_hash": hashlib.sha256(old_content.encode("utf-8")).hexdigest(),
                 "new_hash": hashlib.sha256((updated_file.content or "").encode("utf-8")).hexdigest(),
                 "previous_content": old_content,
@@ -424,6 +933,16 @@ def approve_agent_changes(
                 "approved_by": user_id,
                 "approved_at": datetime.now(timezone.utc).isoformat(),
             })
+            if task.tool_protocol_active:
+                task.tool_history.append({
+                    "name": f"{action.operation}_approval",
+                    "arguments": {"path": action.file_path},
+                    "result": {
+                        "success": True,
+                        "status": "applied",
+                        "path": action.file_path,
+                    },
+                })
             change_results.append({
                 "path": action.file_path,
                 "content": updated_file.content or "",
@@ -433,7 +952,8 @@ def approve_agent_changes(
             task.persist()
         except (
             AgentToolError, PatchNotFoundError, PatchValidationError,
-            StalePatchError, UnsupportedPatchOperation,
+            ProjectWorkspaceSyncError, StalePatchError,
+            UnsupportedPatchOperation,
         ) as error:
             item["status"] = "failed"
             item["error"] = str(error)
@@ -456,6 +976,15 @@ def approve_agent_changes(
                 ),
                 "An approved change could not be applied.",
             )
+        elif task.tool_protocol_active:
+            task.status = "planning"
+            task.stop_reason = None
+            task.add_step(
+                "tool",
+                "completed",
+                "Resuming the agent after the approved file operation",
+            )
+            background_tasks.add_task(_plan_task, task.id, user_id)
         else:
             task.status = "completed"
             task.add_step("finish", "completed", "Approved changes applied")
@@ -612,6 +1141,7 @@ def undo_agent_task_changes(
 def run_agent_validation(
     task_id: str,
     request: AgentCommandApproval,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -628,6 +1158,26 @@ def run_agent_validation(
     if command != task.validation_command:
         raise HTTPException(status_code=400, detail="Command does not match the proposed validation.")
     if not request.approved:
+        if task.tool_protocol_active:
+            task.tool_history.append({
+                "name": "execute_command_approval",
+                "arguments": {"command": command},
+                "result": {
+                    "success": False,
+                    "status": "rejected_by_user",
+                },
+            })
+            task.validation_command = None
+            task.status = "planning"
+            task.stop_reason = None
+            task.add_step(
+                "tool",
+                "completed",
+                "Resuming the agent after the command was declined",
+            )
+            background_tasks.add_task(_plan_task, task.id, user_id)
+            task.persist()
+            return task.as_dict()
         task.status = "completed"
         task.stop_reason = "Validation was declined by the user."
         task.add_step("finish", "completed", task.stop_reason)
@@ -637,23 +1187,39 @@ def run_agent_validation(
         raise HTTPException(status_code=409, detail="Task validation is already in progress.")
     task.add_step("test", "running", "Running approved validation", input=command)
     try:
-        result = terminal_service.execute_command(
-            task.project_id,
-            command,
+        safe_result, synchronized_changes = _run_project_validation_command(
+            db=db,
+            project_id=task.project_id,
+            user_id=user_id,
+            command=command,
             timeout_seconds=120,
         )
-        safe_result = TerminalContext(
-            command=command,
-            exit_code=result.exit_code,
-            stdout=result.stdout[:12000],
-            stderr=result.stderr[:12000],
-            success=result.success,
-        )
         task.validation_result = safe_result.model_dump()
+        if synchronized_changes:
+            task.changes = synchronized_changes
         if getattr(task, "status", None) == "cancelled":
             task.persist()
             return task.as_dict()
-        if result.success:
+        if task.tool_protocol_active:
+            task.tool_history.append({
+                "name": "execute_command_result",
+                "arguments": {"command": command},
+                "result": safe_result.model_dump(),
+            })
+            task.validation_command = None
+            task.status = "planning"
+            task.stop_reason = None
+            task.add_step(
+                "tool",
+                "completed" if safe_result.success else "failed",
+                "Sandbox command finished; returning its result to the agent",
+                output=(safe_result.stdout or safe_result.stderr)[:MAX_AGENT_OUTPUT_CHARS],
+                error=None if safe_result.success else f"Exit code {safe_result.exit_code}",
+            )
+            background_tasks.add_task(_plan_task, task.id, user_id)
+            task.persist()
+            return task.as_dict()
+        if safe_result.success:
             task.status = "completed"
             task.add_step("test", "completed", "Validation passed", output=safe_result.stdout)
             task.add_step("finish", "completed", "Agent task completed")
@@ -667,8 +1233,17 @@ def run_agent_validation(
             task.add_step(
                 "test", "failed", "Validation failed",
                 output=safe_result.stderr or safe_result.stdout,
-                error=f"Exit code {result.exit_code}",
+                error=f"Exit code {safe_result.exit_code}",
             )
+    except ProjectWorkspaceSyncError as error:
+        task.status = "failed"
+        task.stop_reason = str(error)[:1000]
+        task.add_step(
+            "sync",
+            "failed",
+            "Sandbox changes could not be synchronized to project files",
+            error=str(error),
+        )
     except Exception as error:
         if getattr(task, "status", None) == "cancelled":
             return task.as_dict()
@@ -743,10 +1318,64 @@ def continue_agent_task(
 
 async def _continue_task(task_id: str, user_id: int) -> None:
     task = agent_tasks.get(task_id, user_id)
+    if (
+        task is None
+        or task.status in TERMINAL_AGENT_TASK_STATUSES
+        or task.status in WAITING_AGENT_TASK_STATUSES
+    ):
+        return
+    task = agent_tasks.claim_worker(task_id, user_id)
+    if task is None:
+        return
+    try:
+        await _run_continuation_task(task_id, user_id)
+    except asyncio.CancelledError:
+        if task.status in ACTIVE_AGENT_TASK_STATUSES:
+            task.status = "paused"
+            task.stop_reason = "Agent worker was interrupted; review completed steps before resuming."
+            task.add_step(
+                "recovery",
+                "failed",
+                "Agent worker was interrupted",
+                error=task.stop_reason,
+            )
+        raise
+    except Exception as error:
+        logger.exception("Agent continuation worker exited unexpectedly for task %s", task_id)
+        if task.status not in TERMINAL_AGENT_TASK_STATUSES:
+            task.status = "failed"
+            task.stop_reason = str(error)[:1000]
+            task.add_step(
+                "finish",
+                "failed",
+                "Agent continuation worker failed",
+                error=str(error),
+            )
+    finally:
+        if task.status in ACTIVE_AGENT_TASK_STATUSES:
+            task.status = "failed"
+            task.stop_reason = (
+                "Agent continuation worker exited without completing or waiting for approval."
+            )
+            task.add_step(
+                "finish",
+                "failed",
+                "Agent continuation worker exited unexpectedly",
+                error=task.stop_reason,
+            )
+        try:
+            task.persist()
+        finally:
+            agent_tasks.release_worker(task_id)
+
+
+async def _run_continuation_task(task_id: str, user_id: int) -> None:
+    task = agent_tasks.get(task_id, user_id)
     if task is None or getattr(task, "status", None) == "cancelled":
         return
-    db = SessionLocal()
+    db: Session | None = None
     try:
+        db = SessionLocal()
         tools = AgentTools(db, task.project_id, user_id)
         prior_result = task.validation_result or {}
         context = tools.retrieve_context(task.task)[:20000]
@@ -756,6 +1385,14 @@ async def _continue_task(task_id: str, user_id: int) -> None:
             "Validation failed. Diagnose the failure and return a correction "
             "proposal only. Return a JSON object with plan, actions, and "
             "validation_command using the same schema as the original plan. "
+            "Each action must be a CodeAction object with type=code_change, "
+            "operation=replace or create_file, file_path, description, and "
+            "the operation's required fields. For replace, include exact "
+            "start_line, end_line, old_code, and new_code from the provided "
+            "project context. For a new file, use operation=create_file and "
+            "put its full contents in new_code. Do not use type=create_file "
+            "or a content field. Use only commands from the existing agent "
+            "validation allowlist; use null if no validation command applies. "
             "Do not apply changes.\n\n"
             f"TASK:\n{task.task}\n\n"
             f"VALIDATION RESULT:\n{str(prior_result)[:12000]}"
@@ -766,7 +1403,11 @@ async def _continue_task(task_id: str, user_id: int) -> None:
             "Generating a correction proposal",
             input="Analyzing the failed validation result",
         )
-        response = await ai_service.chat(message=prompt, context=context, history=[])
+        response = await ai_service.chat_json(
+            message=prompt,
+            context=context,
+            history=[],
+        )
         plan_step.status = "completed"
         plan_step.output = response
         task.persist()
@@ -774,10 +1415,18 @@ async def _continue_task(task_id: str, user_id: int) -> None:
             return
         plan, actions, command = TaskPlanner.parse(response)
         for action in actions:
-            tools.resolve_file(action.file_path)
+            if action.operation != "create_file":
+                tools.resolve_file(action.file_path)
         task.plan = plan
         task.actions = []
         for action in actions:
+            if action.operation == "create_file":
+                task.actions.append({
+                    "action": action.model_dump(),
+                    "status": "awaiting_approval",
+                    "error": None,
+                })
+                continue
             project_file = tools.resolve_file(action.file_path)
             task.actions.append({
                 "action": action.model_dump(),
@@ -799,4 +1448,5 @@ async def _continue_task(task_id: str, user_id: int) -> None:
         task.add_step("finish", "failed", "Correction planning failed", error=str(error))
         task.persist()
     finally:
-        db.close()
+        if db is not None:
+            db.close()

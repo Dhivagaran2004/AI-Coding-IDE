@@ -1,7 +1,11 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from App.config import AI_MAX_RETRIES, AI_RETRY_BASE_DELAY
+from App.config import (
+    AI_MAX_RETRIES,
+    AI_REQUEST_TIMEOUT_SECONDS,
+    AI_RETRY_BASE_DELAY,
+)
 from App.service.AI.providers.base_provider import BaseLLMProvider
 
 
@@ -18,12 +22,19 @@ class AIService:
         provider: BaseLLMProvider | None = None,
         max_retries: int = AI_MAX_RETRIES,
         retry_base_delay: float = AI_RETRY_BASE_DELAY,
+        request_timeout_seconds: float = AI_REQUEST_TIMEOUT_SECONDS,
     ):
-        if max_retries < 0 or max_retries > 10 or retry_base_delay < 0:
+        if (
+            max_retries < 0
+            or max_retries > 10
+            or retry_base_delay < 0
+            or request_timeout_seconds <= 0
+        ):
             raise ValueError("AI retry settings are outside the supported bounds.")
         self.provider = provider
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self.request_timeout_seconds = request_timeout_seconds
 
     @staticmethod
     def _is_retryable(error: Exception) -> bool:
@@ -63,16 +74,48 @@ class AIService:
 
         for attempt in range(self.max_retries + 1):
             try:
-                return await self.provider.generate(
-                    message=message,
-                    context=context,
-                    history=history,
+                return await asyncio.wait_for(
+                    self.provider.generate(
+                        message=message,
+                        context=context,
+                        history=history,
+                    ),
+                    timeout=self.request_timeout_seconds,
                 )
             except Exception as exc:
                 if attempt >= self.max_retries or not self._is_retryable(exc):
                     raise
                 await self._wait_before_retry(attempt + 1)
         raise RuntimeError("AI retry loop ended unexpectedly.")
+
+    async def chat_json(
+        self,
+        message: str,
+        context: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Request a JSON object when the provider supports JSON mode."""
+        if self.provider is None:
+            raise RuntimeError("AI provider is not configured.")
+
+        generate_json = getattr(self.provider, "generate_json", None)
+        if callable(generate_json):
+            for attempt in range(self.max_retries + 1):
+                try:
+                    return await asyncio.wait_for(
+                        generate_json(
+                            message=message,
+                            context=context,
+                            history=history,
+                        ),
+                        timeout=self.request_timeout_seconds,
+                    )
+                except Exception as exc:
+                    if attempt >= self.max_retries or not self._is_retryable(exc):
+                        raise
+                    await self._wait_before_retry(attempt + 1)
+
+        return await self.chat(message=message, context=context, history=history)
 
     async def stream(
         self,

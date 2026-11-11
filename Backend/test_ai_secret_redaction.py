@@ -1,3 +1,5 @@
+import pytest
+
 from App.schema.ai_schema import AIChatRequest
 from App.service.AI.index.code_chunker import CodeChunker
 
@@ -51,3 +53,33 @@ def test_repository_indexing_rejects_sensitive_content():
     assert not CodeChunker.contains_sensitive_content(
         "def calculate_total(values):\n    return sum(values)"
     )
+
+
+def test_runtime_token_generation_is_not_classified_as_a_secret():
+    source = (
+        "def create_token(user):\n"
+        "    access_token = jwt.encode({'sub': user.username}, SECRET_KEY)\n"
+        "    return access_token\n"
+    )
+
+    assert not CodeChunker.contains_sensitive_content(source)
+    assert CodeChunker().chunk_file(
+        project_id=1,
+        file_id=1,
+        file_path="backend/auth.py",
+        language="python",
+        content=source,
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "API_KEY='super-secret-value-1234'",
+        "password = 'a-hardcoded-password'",
+        "ACCESS_TOKEN=abcdef0123456789abcdef",
+        "-----BEGIN PRIVATE KEY-----\nkey contents\n-----END PRIVATE KEY-----",
+    ],
+)
+def test_repository_indexing_rejects_hardcoded_credentials(content):
+    assert CodeChunker.contains_sensitive_content(content)

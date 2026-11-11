@@ -852,15 +852,28 @@ export default function IDEPage() {
     }
 
     function handleAgentChangesApplied(
-        changes: { path: string; content: string; file_id: number }[],
+        changes: {
+            path: string;
+            content: string;
+            file_id: number;
+            deleted?: boolean;
+        }[],
     ) {
         if (changes.length === 0) {
             return;
         }
 
+        const deletedIds = new Set(
+            changes.filter((change) => change.deleted).map((change) => change.file_id),
+        );
         setTabs((currentTabs) => {
-            const updatedTabs = [...currentTabs];
+            const updatedTabs = currentTabs.filter(
+                (tab) => !deletedIds.has(tab.file.id),
+            );
             for (const change of changes) {
+                if (change.deleted) {
+                    continue;
+                }
                 const name = change.path.split("/").pop() ?? change.path;
                 const existingIndex = updatedTabs.findIndex(
                     (tab) => tab.file.id === change.file_id,
@@ -889,7 +902,18 @@ export default function IDEPage() {
             }
             return updatedTabs;
         });
-        setActiveTabId(changes[changes.length - 1].file_id);
+        const latestNonDeleted = [...changes]
+            .reverse()
+            .find((change) => !change.deleted);
+        const fallbackActiveId = tabs
+            .filter((tab) => !deletedIds.has(tab.file.id))
+            .at(-1)?.file.id ?? null;
+        setActiveTabId((currentId) => {
+            if (currentId !== null && deletedIds.has(currentId)) {
+                return latestNonDeleted?.file_id ?? fallbackActiveId;
+            }
+            return latestNonDeleted?.file_id ?? currentId;
+        });
         setRefreshKey((current) => current + 1);
         setSaveError("");
     }

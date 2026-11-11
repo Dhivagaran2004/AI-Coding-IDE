@@ -63,7 +63,12 @@ type AIChatProps = {
     hasUnsavedChanges?: boolean;
     onApplyPatch?: (action: CodeAction) => Promise<void>;
     onAgentChangesApplied?: (
-        changes: { path: string; content: string; file_id: number }[],
+        changes: {
+            path: string;
+            content: string;
+            file_id: number;
+            deleted?: boolean;
+        }[],
     ) => void;
     onApplyCode?: (
         code: string,
@@ -726,6 +731,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const [agentTask, setAgentTask] = useState<AgentTask | null>(null);
     const [agentUndoError, setAgentUndoError] = useState<string | null>(null);
     const [isUndoingAgentTask, setIsUndoingAgentTask] = useState(false);
+    const [agentValidationError, setAgentValidationError] = useState<string | null>(null);
+    const [isRunningAgentValidation, setIsRunningAgentValidation] = useState(false);
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
     const generationAbortRef = useRef<AbortController | null>(null);
     const [conversations, setConversations] = useState<AIConversationSummary[]>([]);
@@ -892,12 +899,46 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         ) {
             return;
         }
-        const timer = window.setInterval(() => {
-            void getAgentTask(agentTask.id)
-                .then(setAgentTask)
-                .catch((error) => console.error("Unable to refresh agent task:", error));
-        }, 1200);
-        return () => window.clearInterval(timer);
+        let active = true;
+        let timer = 0;
+        const poll = async () => {
+            try {
+                const latest = await getAgentTask(agentTask.id);
+                if (!active) {
+                    return;
+                }
+                setAgentTask((current) => {
+                    if (!current || current.id !== latest.id) {
+                        return current;
+                    }
+                    if (
+                        ["completed", "failed", "cancelled"].includes(current.status) &&
+                        !["completed", "failed", "cancelled"].includes(latest.status)
+                    ) {
+                        return current;
+                    }
+                    if (
+                        Date.parse(latest.updated_at) < Date.parse(current.updated_at)
+                    ) {
+                        return current;
+                    }
+                    return latest;
+                });
+                if (["pending", "planning", "executing", "validating"].includes(latest.status)) {
+                    timer = window.setTimeout(() => void poll(), 1200);
+                }
+            } catch (error) {
+                console.error("Unable to refresh agent task:", error);
+                if (active) {
+                    timer = window.setTimeout(() => void poll(), 1200);
+                }
+            }
+        };
+        timer = window.setTimeout(() => void poll(), 1200);
+        return () => {
+            active = false;
+            window.clearTimeout(timer);
+        };
     }, [agentTask?.id, agentTask?.status]);
 
     useEffect(() => {
@@ -1025,6 +1066,36 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         setPreviewAgentActionIndex(null);
     };
 
+    const handleAgentValidation = async (approved: boolean) => {
+        if (!agentTask?.validation_command) {
+            return;
+        }
+        setAgentValidationError(null);
+        setIsRunningAgentValidation(true);
+        try {
+            const updated = await approveAgentValidation(
+                agentTask.id,
+                agentTask.validation_command,
+                approved,
+            );
+            setAgentTask(updated);
+            if (updated.changes?.length) {
+                onAgentChangesApplied?.(updated.changes);
+            }
+        } catch (error) {
+            const errorMessage = axios.isAxiosError(error)
+                ? typeof error.response?.data?.detail === "string"
+                    ? error.response.data.detail
+                    : error.message
+                : error instanceof Error
+                    ? error.message
+                    : "The approved command could not be run.";
+            setAgentValidationError(errorMessage);
+        } finally {
+            setIsRunningAgentValidation(false);
+        }
+    };
+
     const handleAgentApproval = async (
         approval: {
             action_indexes?: number[];
@@ -1045,6 +1116,18 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                 item.status === "awaiting_approval" ? [index] : [],
             )
             : approval.action_indexes ?? [];
+        const deletePaths = approvedIndexes.flatMap((index) => {
+            const action = task.actions[index]?.action;
+            return action?.operation === "delete" ? [action.file_path] : [];
+        });
+        if (
+            deletePaths.length > 0 &&
+            !window.confirm(
+                `Permanently delete ${deletePaths.join(", ")} from this project?`,
+            )
+        ) {
+            return;
+        }
 
         setPreviewError(null);
         setIsApplyingPatch(true);
@@ -2060,13 +2143,24 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                             <code>{agentTask.validation_command}</code>
                             {agentTask.status === "awaiting_approval" && (
                                 <div className="ai-chat__agent-actions">
-                                    <button type="button" onClick={() => void approveAgentValidation(agentTask.id, agentTask.validation_command!, true).then(setAgentTask)}>
-                                        Run validation
+                                    <button
+                                        type="button"
+                                        disabled={isRunningAgentValidation}
+                                        onClick={() => void handleAgentValidation(true)}
+                                    >
+                                        {isRunningAgentValidation ? "Running..." : "Run validation"}
                                     </button>
-                                    <button type="button" onClick={() => void approveAgentValidation(agentTask.id, agentTask.validation_command!, false).then(setAgentTask)}>
+                                    <button
+                                        type="button"
+                                        disabled={isRunningAgentValidation}
+                                        onClick={() => void handleAgentValidation(false)}
+                                    >
                                         Skip
                                     </button>
                                 </div>
+                            )}
+                            {agentValidationError && (
+                                <p className="ai-chat__agent-error" role="alert">{agentValidationError}</p>
                             )}
                         </div>
                     )}

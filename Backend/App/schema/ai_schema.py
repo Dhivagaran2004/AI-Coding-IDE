@@ -89,6 +89,10 @@ class TerminalContext(BaseModel):
     stdout: str = Field(default="", max_length=50000)
     stderr: str = Field(default="", max_length=50000)
     success: bool
+    timeout: bool = False
+    created_files: list[str] = Field(default_factory=list)
+    modified_files: list[str] = Field(default_factory=list)
+    deleted_files: list[str] = Field(default_factory=list)
 
     @field_validator("command")
     @classmethod
@@ -123,6 +127,11 @@ class CodeAction(BaseModel):
                 raise ValueError("replace actions require old_code")
             if not self.old_code and (self.start_line, self.end_line) != (1, 1):
                 raise ValueError("empty old_code is only valid at line 1")
+        elif self.operation == "delete":
+            if self.start_line is None or self.end_line is None:
+                raise ValueError("delete actions require a line range")
+            if self.end_line < self.start_line:
+                raise ValueError("delete actions require the exact existing file contents")
         return self
 
 

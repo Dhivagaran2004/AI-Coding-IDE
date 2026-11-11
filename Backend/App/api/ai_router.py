@@ -652,12 +652,13 @@ async def _chat(
                             error_status=_usage_error_status(exc),
                         )
                     logger.warning(
-                        "AI streaming request failed (%s).",
+                        "AI streaming request failed (%s; status=%s).",
                         type(exc).__name__,
+                        getattr(exc, "status_code", None),
                     )
                     yield (
                         "data: "
-                        f"{json.dumps({'type': 'error', 'detail': 'AI provider is temporarily unavailable. Try again.'})}\n\n"
+                        f"{json.dumps({'type': 'error', 'detail': _provider_error_detail(exc)})}\n\n"
                     )
 
             return StreamingResponse(
@@ -730,17 +731,75 @@ async def _chat(
                 request_status="failed",
                 error_status=_usage_error_status(exc),
             )
-        logger.warning("AI provider request failed (%s).", type(exc).__name__)
+        logger.warning(
+            "AI provider request failed (%s; status=%s).",
+            type(exc).__name__,
+            getattr(exc, "status_code", None),
+        )
         raise HTTPException(
             status_code=502,
-            detail="AI provider is temporarily unavailable. Try again.",
+            detail=_provider_error_detail(exc),
         ) from exc
+
+
+def _provider_error_detail(error: Exception) -> str:
+    if isinstance(error, (TimeoutError, ConnectionError)) or type(error).__name__ in {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "TimeoutException",
+    }:
+        return "Groq request timed out or the connection failed. Try again."
+
+    status_code = getattr(error, "status_code", None)
+    if not isinstance(status_code, int):
+        return "AI provider is temporarily unavailable. Try again."
+
+    if status_code in (408, 504):
+        return "Groq request timed out. Try again."
+    if status_code in (401, 403):
+        return (
+            f"AI provider authentication failed (HTTP {status_code}). "
+            "Check GROQ_API_KEY and provider access."
+        )
+    if status_code == 404:
+        return (
+            "Configured Groq model was not found (HTTP 404). "
+            "Check GROQ_MODEL."
+        )
+    if status_code == 429:
+        return (
+            "Groq rate limit or quota was reached (HTTP 429). "
+            "Check your Groq plan and try again later."
+        )
+    if status_code == 402:
+        return (
+            "Groq rejected the request because of a billing or quota issue "
+            "(HTTP 402). Check your Groq account limits."
+        )
+    if status_code in (400, 422):
+        return (
+            f"AI provider rejected the request (HTTP {status_code}). "
+            "Check model compatibility and request limits."
+        )
+    return f"Groq returned HTTP {status_code}. Check provider status and settings."
 
 
 def _usage_error_status(error: Exception) -> str:
         status_code = getattr(error, "status_code", None)
-        if isinstance(error, (TimeoutError,)):
+        if isinstance(error, (TimeoutError, ConnectionError)) or type(error).__name__ in {
+            "APIConnectionError",
+            "APITimeoutError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "TimeoutException",
+        }:
             return "provider_timeout"
+        if status_code in (408, 504):
+            return "provider_timeout"
+        if status_code == 402:
+            return "provider_quota"
         if status_code in (401, 403):
             return "provider_authentication"
         if isinstance(status_code, int) and status_code >= 500:

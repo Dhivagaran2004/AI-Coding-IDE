@@ -22,6 +22,7 @@ from App.api.repository_index_router import router as repository_index_router
 from App.api.agent_router import router as agent_router
 from App.api.conversation_router import router as conversation_router
 from App.api.git_router import router as git_router
+from App.api.sandbox_router import router as sandbox_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -53,6 +54,7 @@ app.include_router(repository_index_router)
 app.include_router(agent_router)
 app.include_router(conversation_router)
 app.include_router(git_router)
+app.include_router(sandbox_router)
 
 @app.get("/")
 def home():
