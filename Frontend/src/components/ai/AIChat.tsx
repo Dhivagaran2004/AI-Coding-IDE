@@ -2722,6 +2722,18 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                             )}
                         </div>
                     )}
+                    {agentTask.preview_url && (
+                        <p className="ai-chat__agent-note">
+                            Preview:{" "}
+                            <a
+                                href={agentTask.preview_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                Open static preview
+                            </a>
+                        </p>
+                    )}
                     {(agentTask.status === "failed" && agentTask.iteration < 5 || agentTask.status === "paused") && (
                         <button type="button" className="ai-chat__agent-continue" onClick={() => void continueAgentTask(agentTask.id).then(setAgentTask)}>
                             {agentTask.status === "paused"

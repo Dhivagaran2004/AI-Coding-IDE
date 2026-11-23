@@ -87,6 +87,27 @@ def agent_db():
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def disable_implicit_docker_runs_in_unit_tests(monkeypatch):
+    monkeypatch.setattr(agent_router.sandbox_service, "is_available", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_planning_tests_from_docker(monkeypatch):
+    async def skip_sandbox_qa(
+        task,
+        tools,
+        context,
+        response,
+        plan_details,
+        actions,
+        command,
+    ):
+        return plan_details, actions, command
+
+    monkeypatch.setattr(agent_router, "_run_sandbox_plan_qa", skip_sandbox_qa)
+
+
 def action_payload() -> dict[str, object]:
     return {
         "type": "code_change",

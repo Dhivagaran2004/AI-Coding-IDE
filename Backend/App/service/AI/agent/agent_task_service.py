@@ -93,6 +93,7 @@ class AgentTask:
     )
     validation_command: str | None = None
     validation_result: dict[str, object] | None = None
+    preview_url: str | None = None
     verification_status: str = "pending"
     change_history: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]]()
@@ -247,6 +248,7 @@ class AgentTask:
             "actions": self.actions[:MAX_AGENT_ACTIONS],
             "validation_command": self.validation_command,
             "validation_result": self.validation_result,
+            "preview_url": self.preview_url,
             "verification_status": self.verification_status,
             "change_history": self.change_history[-20:],
             "changes": self.changes[-20:],
@@ -316,6 +318,11 @@ class AgentTaskStore:
             actions=list(state.get("actions", [])),
             validation_command=state.get("validation_command"),
             validation_result=state.get("validation_result"),
+            preview_url=(
+                str(state["preview_url"])
+                if state.get("preview_url") is not None
+                else None
+            ),
             verification_status=str(state.get("verification_status", "pending")),
             change_history=list(state.get("change_history", [])),
             changes=list(state.get("changes", [])),
@@ -762,6 +769,29 @@ class TaskPlanner:
         )
 
     @staticmethod
+    def sandbox_diagnosis_prompt(
+        task: str,
+        command: str,
+        stdout: str,
+        stderr: str,
+        attempt: int,
+    ) -> str:
+        return (
+            "Analyze the failed command from an isolated, offline project sandbox. "
+            "Return one JSON object with exactly three keys: issues (array of "
+            "strings), root_causes (array of strings), and fix_plan (array of "
+            "strings). Cite evidence from the output, distinguish missing "
+            "dependencies/environment blockers from source-code defects, and "
+            "recommend only bounded changes relevant to the user's task. Do not "
+            "claim that any fix has been applied or verified.\n\n"
+            f"ATTEMPT: {attempt}\n"
+            f"TASK:\n{task[:5000]}\n\n"
+            f"COMMAND:\n{command}\n\n"
+            f"EXIT OUTPUT:\n{stdout[:6000]}\n\n"
+            f"ERROR OUTPUT:\n{stderr[:6000]}"
+        )
+
+    @staticmethod
     def correction_repair_prompt(
         task: str,
         response: str,
@@ -981,6 +1011,8 @@ _SAFE_PYTHON_SCRIPT = re.compile(r"^(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py$")
 
 def validate_agent_command(command: str) -> str:
     normalized = command.strip()
+    if normalized == "python -m compileall .":
+        return normalized
     if (
         not normalized
         or len(normalized) > 500

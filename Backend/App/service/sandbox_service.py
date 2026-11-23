@@ -184,6 +184,23 @@ class SandboxService:
             "-lc",
             command,
         ]
+        cache_mounts = (
+            ("SANDBOX_PYTHON_WHEELHOUSE", "/opt/wheelhouse"),
+            ("SANDBOX_NPM_CACHE", "/opt/npm-cache"),
+        )
+        for environment_name, container_path in cache_mounts:
+            configured_path = os.getenv(environment_name)
+            if not configured_path:
+                continue
+            host_path = Path(configured_path).expanduser().resolve()
+            if not host_path.is_dir():
+                raise ValueError(
+                    f"{environment_name} must point to an existing local directory."
+                )
+            container_command[container_command.index(self.docker_image):container_command.index(self.docker_image)] = [
+                "-v",
+                f"{host_path}:{container_path}:ro",
+            ]
 
         return subprocess.run(
             container_command,

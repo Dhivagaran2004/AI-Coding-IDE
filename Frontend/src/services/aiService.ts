@@ -115,6 +115,7 @@ export type AgentTask = {
     tool_calls_used: number;
     validation_command?: string | null;
     validation_result?: AgentValidationResult | null;
+    preview_url?: string | null;
     steps: {
         sequence: number;
         type: string;

@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 from datetime import datetime, timezone
 from typing import cast
 
@@ -40,6 +41,13 @@ from App.service.AI.agent.agent_task_service import (
     TaskPlanner,
     validate_agent_command,
 )
+from App.service.AI.agent.agent_sandbox_qa import (
+    AgentSandboxQAError,
+    build_sandbox_snapshot,
+    is_missing_dependency,
+    run_sandbox_validation,
+    select_validation_command,
+)
 from App.service.AI.agent.agent_tools import (
     AgentToolError,
     AgentTools,
@@ -65,6 +73,7 @@ from App.service.project_workspace_service import (
     ProjectWorkspaceService,
     ProjectWorkspaceSyncError,
 )
+from App.service.sandbox_preview_service import SandboxPreviewService
 from App.service.sandbox_service import SandboxService
 
 
@@ -72,6 +81,7 @@ router = APIRouter(prefix="/ai/agent", tags=["AI Agent"])
 logger = logging.getLogger(__name__)
 agent_tasks = AgentTaskStore(SessionLocal)
 sandbox_service = SandboxService()
+preview_service = SandboxPreviewService()
 
 
 def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
@@ -85,6 +95,9 @@ def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
     )
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
+    if task.preview_url and not preview_service.is_active(task_id):
+        task.preview_url = None
+        task.persist()
     return task
 
 
@@ -473,6 +486,223 @@ def _run_project_validation_command(
             deleted_files=result.deleted_files,
         ),
         changes,
+    )
+
+
+async def _run_sandbox_plan_qa(
+    task: AgentTask,
+    tools: AgentTools,
+    context: str,
+    response: str,
+    plan_details: AgentPlan,
+    actions: list[CodeAction],
+    command: str | None,
+) -> tuple[AgentPlan, list[CodeAction], str | None]:
+    try:
+        snapshot = build_sandbox_snapshot(tools, actions)
+    except AgentSandboxQAError:
+        raise
+    proposed_command = command
+    qa_command = select_validation_command(snapshot, proposed_command)
+    if qa_command is None:
+        task.verification_status = "not_verified"
+        task.add_step(
+            "sandbox_qa",
+            "not_verified",
+            "No safe project validation command could be selected",
+            error=(
+                "The agent must propose a project-local test or build command; "
+                "no files were executed outside Docker."
+            ),
+        )
+        return plan_details, actions, proposed_command
+
+    qa_command = validate_agent_command(qa_command)
+    sandbox_enabled = os.getenv("ENABLE_SANDBOX", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    if not sandbox_enabled or not sandbox_service.is_available():
+        task.verification_status = "not_verified"
+        task.add_step(
+            "sandbox_qa",
+            "not_verified",
+            "Sandbox validation is unavailable",
+            input=qa_command,
+            error="Docker sandbox is unavailable; the validation command was not run.",
+        )
+        return plan_details, actions, proposed_command
+
+    result: TerminalContext | None = None
+    for attempt in range(1, MAX_AGENT_ITERATIONS + 1):
+        task.add_step(
+            "test",
+            "running",
+            f"Running sandbox validation attempt {attempt}",
+            input=qa_command,
+        )
+        result = run_sandbox_validation(
+            sandbox=sandbox_service,
+            project_id=task.project_id,
+            files=snapshot,
+            command=qa_command,
+            timeout_seconds=120,
+        )
+        task.add_step(
+            "test",
+            "completed" if result.success else "failed",
+            "Sandbox validation passed" if result.success else "Sandbox validation failed",
+            input=qa_command,
+            output=(result.stdout or result.stderr)[:MAX_AGENT_OUTPUT_CHARS],
+            error=None if result.success else f"Exit code {result.exit_code}",
+        )
+        if result.success or not result.executed:
+            break
+        if is_missing_dependency(result):
+            task.add_step(
+                "dependency",
+                "not_verified",
+                "Sandbox validation is blocked by an unavailable package",
+                input=qa_command,
+                error=(
+                    "The sandbox has no internet access and the required package "
+                    "is not preinstalled or cached. Add it to the project manifest "
+                    "and provide it in the offline sandbox cache before retrying."
+                ),
+            )
+            break
+        if attempt >= MAX_AGENT_ITERATIONS:
+            break
+
+        diagnosis = await ai_service.chat_json(
+            message=TaskPlanner.sandbox_diagnosis_prompt(
+                task=task.task,
+                command=qa_command,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                attempt=attempt,
+            ),
+            context=context or "No relevant repository context was found.",
+            history=[],
+        )
+        task.add_step(
+            "diagnosis",
+            "completed",
+            f"Diagnosed sandbox failure {attempt}",
+            output=diagnosis,
+        )
+        failure_summary = (
+            f"Sandbox validation command failed: {qa_command}\n"
+            f"Exit code: {result.exit_code}\n"
+            f"STDOUT:\n{result.stdout[:6000]}\n"
+            f"STDERR:\n{result.stderr[:6000]}\n"
+            f"ROOT-CAUSE ANALYSIS:\n{diagnosis[:6000]}"
+        )
+        repair_response = await ai_service.chat_json(
+            message=TaskPlanner.repair_prompt(
+                task=TaskPlanner.include_clarifications(
+                    task.task,
+                    task.clarification_history,
+                ),
+                response=response,
+                error=failure_summary,
+            ),
+            context=context or "No relevant repository context was found.",
+            history=[],
+        )
+        repaired = TaskPlanner.parse_planning_result(
+            repair_response,
+            existing_actions=actions,
+        )
+        if repaired.status != "ready" or repaired.plan is None:
+            task.add_step(
+                "repair",
+                "failed",
+                "The agent could not prepare a safe correction",
+                output=repair_response,
+            )
+            break
+        if not repaired.actions:
+            task.add_step(
+                "repair",
+                "failed",
+                "The agent returned no correction actions",
+                output=repair_response,
+            )
+            break
+
+        plan_details = repaired.plan
+        actions = repaired.actions
+        response = repair_response
+        snapshot = build_sandbox_snapshot(tools, actions)
+        if repaired.validation_command:
+            proposed_command = validate_agent_command(
+                repaired.validation_command
+            )
+        qa_command = validate_agent_command(
+            select_validation_command(snapshot, proposed_command)
+            or qa_command
+        )
+        task.add_step(
+            "repair",
+            "completed",
+            f"Prepared sandbox correction {attempt}",
+            output=repair_response,
+        )
+
+    if result is not None and not result.success:
+        task.add_step(
+            "sandbox_qa",
+            "failed" if result.executed else "not_verified",
+            "Sandbox QA did not pass; review the reported issues before applying changes",
+            input=qa_command,
+            output=(result.stdout or result.stderr)[:MAX_AGENT_OUTPUT_CHARS],
+        )
+    return plan_details, actions, proposed_command
+
+
+def _start_task_preview(task: AgentTask, db: Session, user_id: int) -> None:
+    if task.preview_url and preview_service.is_active(task.id):
+        return
+    task.preview_url = None
+    try:
+        tools = AgentTools(db, task.project_id, user_id)
+        files = build_sandbox_snapshot(tools, [])
+        preview_url = preview_service.start(task.id, files)
+    except (
+        AgentSandboxQAError,
+        AgentToolError,
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        ValueError,
+    ) as error:
+        logger.warning(
+            "Sandbox preview could not start for agent task %s: %s",
+            task.id,
+            error,
+        )
+        task.add_step(
+            "preview",
+            "failed",
+            "Sandbox preview could not start",
+            error=str(error)[:1000],
+        )
+        return
+    if preview_url is None:
+        task.add_step(
+            "preview",
+            "not_verified",
+            "No supported web entry point was found for preview",
+        )
+        return
+    task.preview_url = preview_url
+    task.add_step(
+        "preview",
+        "completed",
+        "Started a static preview of the approved project files",
+        output=preview_url,
     )
 
 
@@ -1118,6 +1348,19 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
             target = tools.resolve_file(action.file_path)
             if tools.get_file_path(target) != action.file_path:
                 raise ValueError("Agent action path does not match the project file.")
+        sandbox_validation_result = None
+        if actions and not task.tool_protocol_active:
+            plan_details, actions, command = await _run_sandbox_plan_qa(
+                task=task,
+                tools=tools,
+                context=context,
+                response=response,
+                plan_details=plan_details,
+                actions=actions,
+                command=command,
+            )
+            sandbox_validation_result = task.validation_result
+            plan = [item.description for item in plan_details.tasks]
         task.plan = plan
         task.plan_details = plan_details.model_dump(mode="json")
         task.clarification_questions = []
@@ -1134,7 +1377,7 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
         task.tool_protocol_active = False
         task.initialize_plan_task_history()
         task.validation_command = command
-        task.validation_result = None
+        task.validation_result = sandbox_validation_result
         task.verification_status = "pending"
         task.add_step("plan", "completed", "Implementation plan prepared")
         if actions:
@@ -1906,6 +2149,8 @@ def run_agent_validation(
             if not safe_result.executed
             else "failed"
         )
+        if safe_result.success:
+            _start_task_preview(task, db, user_id)
         if synchronized_changes:
             task.changes = synchronized_changes
         if getattr(task, "status", None) == "cancelled":
@@ -2007,6 +2252,26 @@ def cancel_agent_task(
     task = agent_tasks.cancel(task_id, user_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Agent task not found.")
+    if preview_service.stop(task_id):
+        task.preview_url = None
+        task.add_step(
+            "preview",
+            "completed",
+            "Stopped the sandbox preview after task cancellation",
+        )
+    return task.as_dict()
+
+
+@router.post("/tasks/{task_id}/preview/stop", response_model=AgentTaskResponse)
+def stop_agent_preview(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    task = _get_owned_task(task_id, cast(int, current_user.id), db)
+    if preview_service.stop(task_id):
+        task.preview_url = None
+        task.add_step("preview", "completed", "Stopped the sandbox preview")
     return task.as_dict()
 
 

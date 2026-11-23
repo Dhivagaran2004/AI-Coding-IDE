@@ -361,6 +361,7 @@ class AgentTaskResponse(BaseModel):
     actions: list[AgentAction]
     validation_command: str | None = None
     validation_result: dict[str, object] | None = None
+    preview_url: str | None = None
     change_history: list[dict[str, object]]
     iteration: int
     steps: list[dict[str, object]]

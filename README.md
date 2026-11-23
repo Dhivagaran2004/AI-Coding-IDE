@@ -55,3 +55,14 @@ use `LLM_API_KEY` for embeddings during migration.
 - The AI agent uses the same sandbox service and database-backed project files. Read-only file tools run directly against the selected, owner-scoped project; file changes and sandbox commands require approval before applying.
 - Agent sandbox commands are restricted to approved project checks, including `python <project-file.py>`, pytest, selected npm tasks, and read-only Git status/diff. There is no host-shell fallback.
 - `AI_AGENT_MAX_TOOL_CALLS` limits the model's tool loop to 1–20 calls (default 8). Project-file database records remain authoritative; successful sandbox file changes are synchronized to those records and the workspace mirror used by terminal/Git services.
+- Structured agent plans are staged in a temporary Docker snapshot and validated before the proposed changes are presented for approval. On command failures, the agent records a diagnosis and may prepare bounded corrections; generated changes are not synced into the project until approved.
+- Sandbox commands have no network access. The sandbox image includes pytest as its baseline Python test runner, but project-specific packages must already be present in the image or available from an explicitly configured offline package cache. Missing dependencies are reported as blockers rather than installed from the internet.
+- To provide offline packages, set `SANDBOX_PYTHON_WHEELHOUSE` to a local wheel directory and/or `SANDBOX_NPM_CACHE` to a populated npm cache directory in the backend environment. The agent installs Python requirements with pip `--no-index` and Node dependencies with npm `--offline`; both cache directories are mounted read-only.
+- After successful approved validation, projects with an `index.html` can start a temporary static preview on a random `127.0.0.1` port. It serves only approved snapshot files, applies a restrictive content-security policy, and expires after two hours or stops when the agent task is cancelled. Backend application processes are not started by this static preview.
+
+Rebuild the sandbox image after changing `Backend/sandbox/Dockerfile`:
+
+```powershell
+Set-Location Backend
+docker build -t ai-coding-ide-sandbox:latest -f sandbox/Dockerfile .
+```
