@@ -17,15 +17,20 @@ from App.models.project_file import ProjectFile
 from App.models.user import User
 from App.schema.agent_schema import (
     AgentApproval,
+    AgentClarification,
     AgentCommandApproval,
+    AgentPlan,
+    AgentPlanTaskCompletion,
     AgentTaskCreate,
     AgentTaskResponse,
 )
 from App.schema.ai_schema import CodeAction, TerminalContext
 from App.service.AI.agent.agent_task_service import (
+    AI_AGENT_MAX_CORRECTION_RETRIES,
     AI_AGENT_MAX_TOOL_CALLS,
     ACTIVE_AGENT_TASK_STATUSES,
     MAX_AGENT_ITERATIONS,
+    MAX_AGENT_ACTIONS,
     MAX_AGENT_OUTPUT_CHARS,
     TERMINAL_AGENT_TASK_STATUSES,
     WAITING_AGENT_TASK_STATUSES,
@@ -83,6 +88,323 @@ def _get_owned_task(task_id: str, user_id: int, db: Session) -> AgentTask:
     return task
 
 
+def _plan_task_rows(task: AgentTask) -> list[dict[str, object]]:
+    if task.plan_details is None:
+        return []
+    rows = task.plan_details.get("tasks", [])
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _plan_task_by_id(
+    task: AgentTask,
+    plan_task_id: str,
+) -> dict[str, object] | None:
+    return next(
+        (
+            row for row in _plan_task_rows(task)
+            if row.get("id") == plan_task_id
+        ),
+        None,
+    )
+
+
+def _plan_task_actions(
+    task: AgentTask,
+    plan_task_id: str,
+) -> list[dict[str, object]]:
+    return [
+        item for item in task.actions
+        if item.get("plan_task_id") == plan_task_id
+    ]
+
+
+def _assign_plan_action_records(
+    task: AgentTask,
+    plan_details: AgentPlan,
+    actions: list[CodeAction],
+    prior_actions: list[dict[str, object]],
+) -> None:
+    file_owners: dict[str, str] = {}
+    for plan_task in plan_details.tasks:
+        for file_path in plan_task.expected_files:
+            if file_path in file_owners:
+                raise ValueError(
+                    f"Expected file {file_path} is assigned to multiple plan tasks."
+                )
+            file_owners[file_path] = plan_task.id
+
+    task.actions = list(prior_actions)
+    for item in task.actions:
+        action_data = item.get("action")
+        if not isinstance(action_data, dict):
+            continue
+        action = CodeAction.model_validate(action_data)
+        plan_task_id = file_owners.get(action.file_path)
+        if plan_task_id is not None:
+            item["plan_task_id"] = plan_task_id
+        else:
+            item.pop("plan_task_id", None)
+
+    for action in actions:
+        plan_task_id = file_owners.get(action.file_path)
+        if plan_task_id is None:
+            raise ValueError(
+                f"Action path {action.file_path} is not assigned to a plan task."
+            )
+        task.actions.append({
+            "action": action.model_dump(),
+            "status": "scheduled",
+            "plan_task_id": plan_task_id,
+            "error": None,
+        })
+
+
+def _record_plan_task_status(
+    task: AgentTask,
+    plan_task_id: str,
+    status: str,
+    description: str,
+    verification_notes: str | None = None,
+) -> None:
+    task.set_plan_task_status(
+        plan_task_id,
+        status,
+        description,
+        verification_notes=verification_notes,
+    )
+
+
+def _activate_ready_plan_tasks(task: AgentTask) -> None:
+    made_progress = True
+    while made_progress:
+        made_progress = False
+        task_rows = _plan_task_rows(task)
+        tasks_by_id = {
+            str(row.get("id")): row
+            for row in task_rows
+            if row.get("id")
+        }
+        for row in task_rows:
+            plan_task_id = str(row.get("id", ""))
+            if not plan_task_id or row.get("status") != "pending":
+                continue
+            dependencies = row.get("dependencies", [])
+            if not isinstance(dependencies, list):
+                raise ValueError(f"Plan task {plan_task_id} has invalid dependencies.")
+            if any(
+                tasks_by_id.get(str(dependency), {}).get("status") != "completed"
+                for dependency in dependencies
+            ):
+                continue
+            if (
+                row.get("task_type") == "analysis"
+                and not dependencies
+                and not row.get("expected_files")
+            ):
+                row["verification_status"] = "not_required"
+                _record_plan_task_status(
+                    task,
+                    plan_task_id,
+                    "completed",
+                    "Repository analysis completed during planning.",
+                )
+                made_progress = True
+                continue
+            _record_plan_task_status(
+                task,
+                plan_task_id,
+                "in_progress",
+                "Plan task is ready for execution.",
+            )
+            for action_item in _plan_task_actions(task, plan_task_id):
+                if action_item.get("status") == "scheduled":
+                    action_item["status"] = "awaiting_approval"
+            made_progress = True
+
+
+def _sync_plan_task_actions(task: AgentTask) -> None:
+    for row in _plan_task_rows(task):
+        plan_task_id = str(row.get("id", ""))
+        if not plan_task_id or row.get("status") != "in_progress":
+            continue
+        action_items = _plan_task_actions(task, plan_task_id)
+        if not action_items:
+            continue
+        statuses = [item.get("status") for item in action_items]
+        if any(status in {"failed", "rejected", "blocked"} for status in statuses):
+            _record_plan_task_status(
+                task,
+                plan_task_id,
+                "blocked",
+                "A required file action failed or was rejected.",
+            )
+        elif all(status == "applied" for status in statuses):
+            _record_plan_task_status(
+                task,
+                plan_task_id,
+                "applied",
+                "All approved file actions for this task were applied; task verification is still required.",
+            )
+
+    made_progress = True
+    while made_progress:
+        made_progress = False
+        tasks_by_id = {
+            str(row.get("id")): row
+            for row in _plan_task_rows(task)
+            if row.get("id")
+        }
+        for row in _plan_task_rows(task):
+            if row.get("status") != "pending":
+                continue
+            dependencies = row.get("dependencies", [])
+            if not isinstance(dependencies, list):
+                continue
+            if any(
+                tasks_by_id.get(str(dependency), {}).get("status") == "blocked"
+                for dependency in dependencies
+            ):
+                plan_task_id = str(row.get("id", ""))
+                if not plan_task_id:
+                    continue
+                _record_plan_task_status(
+                    task,
+                    plan_task_id,
+                    "blocked",
+                    "A prerequisite plan task is blocked.",
+                )
+                for action_item in _plan_task_actions(task, plan_task_id):
+                    if action_item.get("status") == "scheduled":
+                        action_item["status"] = "blocked"
+                made_progress = True
+
+
+def _plan_validation_blockers(task: AgentTask) -> list[str]:
+    blockers = []
+    if any(
+        item.get("status") in {"scheduled", "awaiting_approval"}
+        for item in task.actions
+    ):
+        blockers.append("pending file actions")
+    for row in _plan_task_rows(task):
+        status = row.get("status")
+        task_type = row.get("task_type")
+        if status == "pending":
+            blockers.append("pending plan tasks")
+        elif status == "in_progress" and task_type != "verification":
+            blockers.append("unfinished plan tasks")
+        elif status == "blocked":
+            blockers.append("blocked plan tasks")
+    return blockers
+
+
+def _advance_plan_execution(task: AgentTask) -> None:
+    if task.plan_details is None:
+        return
+    _sync_plan_task_actions(task)
+    _activate_ready_plan_tasks(task)
+    _sync_plan_task_actions(task)
+    task_rows = _plan_task_rows(task)
+    action_statuses = [item.get("status") for item in task.actions]
+    all_tasks_completed = all(
+        row.get("status") == "completed" for row in task_rows
+    )
+    if any(row.get("verification_status") == "failed" for row in task_rows):
+        task.verification_status = "failed"
+    elif all_tasks_completed and all(
+        row.get("verification_status") in {"verified", "not_required"}
+        for row in task_rows
+    ):
+        task.verification_status = "verified"
+    elif any(
+        row.get("verification_status") == "not_verified"
+        or row.get("status") == "applied"
+        for row in task_rows
+    ):
+        task.verification_status = "not_verified"
+    else:
+        task.verification_status = "pending"
+    if "awaiting_approval" in action_statuses:
+        task.status = "awaiting_approval"
+        task.stop_reason = None
+    elif any(row.get("status") == "blocked" for row in task_rows):
+        task.status = "failed"
+        task.stop_reason = "A plan task is blocked; dependent tasks cannot proceed."
+    elif any(status == "scheduled" for status in action_statuses):
+        task.status = "awaiting_validation"
+        task.stop_reason = (
+            "Verify and complete the applied prerequisite task(s) to unlock dependent work."
+        )
+    elif task.validation_command and not task.validation_result:
+        blockers = _plan_validation_blockers(task)
+        if not blockers:
+            task.status = "awaiting_approval"
+            task.stop_reason = None
+        else:
+            task.status = "awaiting_validation"
+            task.stop_reason = (
+                "Complete the current plan task(s) before running project validation."
+            )
+    elif all_tasks_completed and task.verification_status == "verified":
+        task.status = "completed"
+        task.stop_reason = "All plan tasks are complete."
+    else:
+        task.status = "awaiting_validation"
+        task.stop_reason = (
+            "Plan task changes are applied but acceptance criteria are not verified."
+            if task.verification_status == "not_verified"
+            else "Plan tasks require verification before completion."
+        )
+    task.persist()
+
+
+def _complete_plan_tasks_after_validation(task: AgentTask) -> None:
+    _sync_plan_task_actions(task)
+    for row in _plan_task_rows(task):
+        plan_task_id = str(row.get("id", ""))
+        if not plan_task_id:
+            continue
+        if row.get("status") == "applied":
+            criteria = row.get("acceptance_criteria", [])
+            if isinstance(criteria, list):
+                row["verification_status"] = "not_verified"
+                row["acceptance_results"] = [
+                    {
+                        "criterion": str(criterion),
+                        "status": "not_verified",
+                        "evidence": (
+                            "The approved validation command passed, but this "
+                            "criterion was not individually assessed."
+                        ),
+                    }
+                    for criterion in criteria
+                ]
+        elif row.get("status") == "in_progress" and row.get("task_type") == "verification":
+            criteria = row.get("acceptance_criteria", [])
+            if isinstance(criteria, list):
+                row["verification_status"] = "verified"
+                row["acceptance_results"] = [
+                    {
+                        "criterion": str(criterion),
+                        "status": "met",
+                        "evidence": (
+                            "The approved project validation command completed "
+                            "successfully."
+                        ),
+                    }
+                    for criterion in criteria
+                ]
+            _record_plan_task_status(
+                task,
+                plan_task_id,
+                "completed",
+                "The approved project validation completed successfully.",
+            )
+    _advance_plan_execution(task)
+
+
 def _run_validation_command(project_id: int, command: str, timeout_seconds: int = 120) -> TerminalContext:
     sandbox_enabled = os.getenv("ENABLE_SANDBOX", "true").lower() not in {"0", "false", "no"}
     if not sandbox_enabled or not sandbox_service.is_available():
@@ -94,6 +416,7 @@ def _run_validation_command(project_id: int, command: str, timeout_seconds: int 
                 "was not executed on the host."
             ),
             success=False,
+            executed=False,
         )
 
     result = sandbox_service.execute(project_id, command, timeout=timeout_seconds)
@@ -279,7 +602,11 @@ async def _request_plan_with_tools(
     context: str,
     plan_step,
 ) -> str | None:
-    message = TaskPlanner.tool_prompt(task.task, task.tool_history)
+    message = TaskPlanner.tool_prompt(
+        task.task,
+        task.tool_history,
+        task.clarification_history,
+    )
     response = await ai_service.chat_json(
         message=message,
         context=context or "No relevant repository context was found.",
@@ -314,7 +641,11 @@ async def _request_plan_with_tools(
                     "The agent reached its tool-call limit while recovering from malformed calls."
                 )
             response = await ai_service.chat_json(
-                message=TaskPlanner.tool_prompt(task.task, task.tool_history),
+                message=TaskPlanner.tool_prompt(
+                    task.task,
+                    task.tool_history,
+                    task.clarification_history,
+                ),
                 context=context or "No relevant repository context was found.",
                 history=[],
             )
@@ -353,7 +684,7 @@ async def _request_plan_with_tools(
         )
 
         if proposed_action is not None:
-            if len(task.actions) >= 10:
+            if len(task.actions) >= MAX_AGENT_ACTIONS:
                 raise ValueError("The agent exceeded the maximum number of proposed changes.")
             task.actions.append({
                 "action": proposed_action.model_dump(),
@@ -374,7 +705,11 @@ async def _request_plan_with_tools(
             return None
 
         response = await ai_service.chat_json(
-            message=TaskPlanner.tool_prompt(task.task, task.tool_history),
+            message=TaskPlanner.tool_prompt(
+                task.task,
+                task.tool_history,
+                task.clarification_history,
+            ),
             context=context or "No relevant repository context was found.",
             history=[],
         )
@@ -478,7 +813,7 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
                 continue
             inspected.append(f"FILE: {path}\n{str(file_data['content'])[:4500]}")
             task.add_step("inspect", "completed", f"Inspected {path}")
-        context = tools.retrieve_context(task.task)[:30000]
+        context = tools.retrieve_context(task.task)[:22000]
         if file_paths:
             tree = "PROJECT FILES:\n" + "\n".join(file_paths)
             context = f"{tree}\n\n{context}"
@@ -502,7 +837,10 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
             context = f"INSPECTED FILES:\n{'\n\n'.join(inspected)}\n\n{context}"
         if task.current_context:
             context = f"CURRENT IDE CONTEXT:\n{task.current_context}\n\n{context}"
-        context = context[:30000]
+        context = (
+            "REPOSITORY INTELLIGENCE (detected from safe project files):\n"
+            f"{tools.project_intelligence()}\n\n{context}"
+        )[:30000]
         task.add_step(
             "retrieve", "completed", "Retrieved relevant project context",
             output=context[:12000],
@@ -531,8 +869,17 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
         task.persist()
         if getattr(task, "status", None) == "cancelled":
             return
+        existing_actions = [
+            CodeAction.model_validate(item["action"])
+            for item in task.actions
+            if item.get("status") == "applied"
+            and isinstance(item.get("action"), dict)
+        ]
         try:
-            plan, actions, command = TaskPlanner.parse(response)
+            planning_result = TaskPlanner.parse_planning_result(
+                response,
+                existing_actions=existing_actions,
+            )
         except ValueError as error:
             last_error = error
             for attempt in range(2):
@@ -547,7 +894,12 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
                     return
                 response = await ai_service.chat_json(
                     message=TaskPlanner.repair_prompt(
-                        task.task, response, str(last_error)
+                        TaskPlanner.include_clarifications(
+                            task.task,
+                            task.clarification_history,
+                        ),
+                        response,
+                        str(last_error),
                     ),
                     context=context or "No relevant repository context was found.",
                     history=[],
@@ -558,13 +910,103 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
                 if getattr(task, "status", None) == "cancelled":
                     return
                 try:
-                    plan, actions, command = TaskPlanner.parse(response)
+                    planning_result = TaskPlanner.parse_planning_result(
+                        response,
+                        existing_actions=existing_actions,
+                    )
                     break
                 except ValueError as repair_error:
                     last_error = repair_error
             else:
                 raise last_error
-        if not actions and not command and not task.tool_protocol_active:
+        if (
+            planning_result.status == "clarification_required"
+            and TaskPlanner.is_action_limit_clarification(
+                planning_result.clarification_questions
+            )
+        ):
+            phase_error = ValueError(
+                "The action limit is internal. Return a ready plan for the first "
+                "coherent phase with at most 40 actions; do not ask the user to "
+                "choose a phase."
+            )
+            for attempt in range(2):
+                repair_step = task.add_step(
+                    "plan",
+                    "running",
+                    "Preparing the first bounded implementation phase",
+                    input=f"Phase planning attempt {attempt + 1} of 2",
+                    error=str(phase_error),
+                )
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                response = await ai_service.chat_json(
+                    message=TaskPlanner.repair_prompt(
+                        TaskPlanner.include_clarifications(
+                            task.task,
+                            task.clarification_history,
+                        ),
+                        response,
+                        str(phase_error),
+                    ),
+                    context=context or "No relevant repository context was found.",
+                    history=[],
+                )
+                repair_step.status = "completed"
+                repair_step.output = response
+                task.persist()
+                if getattr(task, "status", None) == "cancelled":
+                    return
+                try:
+                    planning_result = TaskPlanner.parse_planning_result(
+                        response,
+                        existing_actions=existing_actions,
+                    )
+                except ValueError as repair_error:
+                    phase_error = repair_error
+                    continue
+                if (
+                    planning_result.status == "clarification_required"
+                    and TaskPlanner.is_action_limit_clarification(
+                        planning_result.clarification_questions
+                    )
+                ):
+                    phase_error = ValueError(
+                        "The planner again asked about the internal action limit."
+                    )
+                    continue
+                break
+            else:
+                raise phase_error
+        if planning_result.status == "clarification_required":
+            task.clarification_questions = planning_result.clarification_questions
+            task.validation_command = None
+            task.actions = [
+                item for item in task.actions
+                if item.get("status") == "applied"
+            ]
+            task.status = "awaiting_clarification"
+            task.stop_reason = "The agent needs clarification before it can prepare a safe implementation plan."
+            task.add_step(
+                "clarification",
+                "completed",
+                "Waiting for user clarification",
+                output="\n".join(task.clarification_questions),
+            )
+            task.persist()
+            return
+
+        assert planning_result.plan is not None
+        plan_details = planning_result.plan
+        plan = [item.description for item in plan_details.tasks]
+        actions = planning_result.actions
+        command = planning_result.validation_command
+        if (
+            not actions
+            and not command
+            and not task.tool_protocol_active
+            and TaskPlanner.request_expects_changes(task.task)
+        ):
             previous_response = response
             for attempt in range(2):
                 retry_step = task.add_step(
@@ -577,7 +1019,11 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
                     return
                 response = await ai_service.chat_json(
                     message=TaskPlanner.missing_actions_prompt(
-                        task.task, previous_response
+                        TaskPlanner.include_clarifications(
+                            task.task,
+                            task.clarification_history,
+                        ),
+                        previous_response,
                     ),
                     context=context or "No relevant repository context was found.",
                     history=[],
@@ -587,33 +1033,82 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
                 task.persist()
                 if getattr(task, "status", None) == "cancelled":
                     return
-                plan, actions, command = TaskPlanner.parse(response)
+                try:
+                    planning_result = TaskPlanner.parse_planning_result(
+                        response,
+                        existing_actions=existing_actions,
+                    )
+                except ValueError:
+                    raise
+                if planning_result.status == "clarification_required":
+                    task.clarification_questions = planning_result.clarification_questions
+                    task.status = "awaiting_clarification"
+                    task.stop_reason = "The agent needs clarification before it can prepare a safe implementation plan."
+                    task.add_step(
+                        "clarification",
+                        "completed",
+                        "Waiting for user clarification",
+                        output="\n".join(task.clarification_questions),
+                    )
+                    task.persist()
+                    return
+                assert planning_result.plan is not None
+                plan_details = planning_result.plan
+                plan = [item.description for item in plan_details.tasks]
+                actions = planning_result.actions
+                command = planning_result.validation_command
                 if actions or command:
                     break
                 previous_response = response
 
         if not actions and not command:
             task.plan = plan
+            task.plan_details = plan_details.model_dump(mode="json")
             task.validation_command = None
-            if task.tool_protocol_active:
-                task.status = "completed"
-                task.stop_reason = "The agent completed without proposing additional changes."
-                task.add_step("finish", "completed", task.stop_reason)
-                task.persist()
-                return
+            task.verification_status = "pending"
+            applied_actions = [
+                item for item in task.actions
+                if item.get("status") == "applied"
+            ]
+            previous_actions = (
+                task.actions if task.tool_protocol_active else applied_actions
+            )
             task.actions = []
-            task.status = "failed"
-            task.stop_reason = (
-                "The agent could not prepare a code change from the available "
-                "project files. Retry planning or specify the file and behavior "
-                "you want changed."
+            task.tool_protocol_active = False
+            task.initialize_plan_task_history()
+            if (
+                TaskPlanner.request_expects_changes(task.task)
+                and not previous_actions
+            ):
+                for row in _plan_task_rows(task):
+                    if row.get("status") == "pending":
+                        _record_plan_task_status(
+                            task,
+                            str(row["id"]),
+                            "blocked",
+                            "No file actions were proposed for this change request.",
+                        )
+                task.status = "failed"
+                task.stop_reason = (
+                    "The agent could not prepare a code change from the available "
+                    "project files. Retry planning or specify the file and behavior "
+                    "you want changed."
+                )
+                task.add_step(
+                    "finish",
+                    "failed",
+                    "No code changes were proposed",
+                    error=task.stop_reason,
+                )
+                return
+            _assign_plan_action_records(
+                task,
+                plan_details,
+                [],
+                previous_actions,
             )
-            task.add_step(
-                "finish",
-                "failed",
-                "No code changes were proposed",
-                error=task.stop_reason,
-            )
+            task.add_step("plan", "completed", "Analysis plan prepared")
+            _advance_plan_execution(task)
             return
         for action in actions:
             if action.operation == "create_file":
@@ -624,35 +1119,27 @@ async def _run_planning_task(task_id: str, user_id: int) -> None:
             if tools.get_file_path(target) != action.file_path:
                 raise ValueError("Agent action path does not match the project file.")
         task.plan = plan
-        previous_actions = task.actions if task.tool_protocol_active else []
-        task.actions = list(previous_actions)
-        if len(task.actions) + len(actions) > 10:
+        task.plan_details = plan_details.model_dump(mode="json")
+        task.clarification_questions = []
+        applied_actions = [
+            item for item in task.actions
+            if item.get("status") == "applied"
+        ]
+        previous_actions = (
+            task.actions if task.tool_protocol_active else applied_actions
+        )
+        if len(previous_actions) + len(actions) > MAX_AGENT_ACTIONS:
             raise ValueError("The agent exceeded the maximum number of proposed changes.")
-        for action in actions:
-            if action.operation == "create_file":
-                task.actions.append({
-                    "action": action.model_dump(),
-                    "status": "awaiting_approval",
-                    "error": None,
-                })
-                continue
-            tools.resolve_file(action.file_path)
-            task.actions.append({
-                "action": action.model_dump(),
-                "status": "awaiting_approval",
-                "error": None,
-            })
+        _assign_plan_action_records(task, plan_details, actions, previous_actions)
+        task.tool_protocol_active = False
+        task.initialize_plan_task_history()
         task.validation_command = command
+        task.validation_result = None
+        task.verification_status = "pending"
         task.add_step("plan", "completed", "Implementation plan prepared")
         if actions:
             task.add_step("code_action", "completed", f"Prepared {len(actions)} change(s) for review")
-            task.status = "awaiting_approval"
-        elif command:
-            task.status = "awaiting_approval"
-        else:
-            task.status = "completed"
-            task.stop_reason = "Planning completed without proposed file changes."
-        task.persist()
+        _advance_plan_execution(task)
     except Exception as error:
         logger.exception("Agent planning failed for task %s", task_id)
         task.status = "failed"
@@ -678,7 +1165,11 @@ def create_agent_task(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     user_id = cast(int, current_user.id)
-    current_context_parts: list[str] = []
+    current_context_parts = [
+        "PROJECT METADATA:\n"
+        f"Name: {project.name}\n"
+        f"Primary language: {project.language or 'unknown'}"
+    ]
     current_file_is_safe = (
         request.current_file_path is None
         or AgentTools.is_safe_path(request.current_file_path)
@@ -751,6 +1242,50 @@ def get_agent_task(
     return _get_owned_task(task_id, cast(int, current_user.id), db).as_dict()
 
 
+@router.post("/tasks/{task_id}/clarify", response_model=AgentTaskResponse)
+def clarify_agent_task(
+    task_id: str,
+    request: AgentClarification,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user_id = cast(int, current_user.id)
+    task = _get_owned_task(task_id, user_id, db)
+    if task.status != "awaiting_clarification":
+        raise HTTPException(
+            status_code=409,
+            detail="Task is not waiting for clarification.",
+        )
+    answer = request.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=422, detail="Clarification answer cannot be empty.")
+    if agent_tasks.transition(
+        task.id,
+        user_id,
+        "awaiting_clarification",
+        "planning",
+    ) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Task clarification is already being processed.",
+        )
+    task.clarification_history.append({
+        "questions": "\n".join(task.clarification_questions),
+        "answer": answer,
+    })
+    task.clarification_questions = []
+    task.stop_reason = None
+    task.add_step(
+        "clarification",
+        "completed",
+        "User provided clarification",
+        input=answer,
+    )
+    background_tasks.add_task(_plan_task, task.id, user_id)
+    return task.as_dict()
+
+
 @router.post("/tasks/{task_id}/approve", response_model=AgentTaskResponse)
 def approve_agent_changes(
     task_id: str,
@@ -797,6 +1332,10 @@ def approve_agent_changes(
                     })
             task.status = "awaiting_approval"
             task.add_step("code_action", "completed", "Changes rejected by user")
+        if task.plan_details is not None:
+            _advance_plan_execution(task)
+            task.persist()
+            return task.as_dict()
         if not task.validation_command and not any(
             item.get("status") == "awaiting_approval" for item in task.actions
         ):
@@ -961,12 +1500,12 @@ def approve_agent_changes(
             break
 
     if task.status not in {"failed", "cancelled"}:
-        pending = any(item.get("status") == "awaiting_approval" for item in task.actions)
-        failed = any(item.get("status") == "failed" for item in task.actions)
-        if pending or task.validation_command:
+        if task.plan_details is not None:
+            _advance_plan_execution(task)
+        elif any(item.get("status") == "awaiting_approval" for item in task.actions) or task.validation_command:
             task.status = "awaiting_approval"
             task.stop_reason = None
-        elif failed:
+        elif any(item.get("status") == "failed" for item in task.actions):
             task.status = "failed"
             task.stop_reason = next(
                 (
@@ -1137,6 +1676,161 @@ def undo_agent_task_changes(
     return response
 
 
+@router.post(
+    "/tasks/{task_id}/plan-tasks/complete",
+    response_model=AgentTaskResponse,
+)
+def complete_agent_plan_task(
+    task_id: str,
+    request: AgentPlanTaskCompletion,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user_id = cast(int, current_user.id)
+    task = _get_owned_task(task_id, user_id, db)
+    verification_notes = request.verification_notes.strip()
+    if not verification_notes:
+        raise HTTPException(
+            status_code=422,
+            detail="Verification notes cannot be empty.",
+        )
+    if task.status != "awaiting_validation":
+        raise HTTPException(
+            status_code=409,
+            detail="Task is not waiting for plan-task verification.",
+        )
+    plan_task = _plan_task_by_id(task, request.plan_task_id)
+    if plan_task is None:
+        raise HTTPException(status_code=404, detail="Plan task not found.")
+    if plan_task.get("status") not in {"applied", "in_progress"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Plan task must be active and have its approved changes applied.",
+        )
+    dependencies = plan_task.get("dependencies", [])
+    tasks_by_id = {
+        str(row.get("id")): row
+        for row in _plan_task_rows(task)
+        if row.get("id")
+    }
+    if not isinstance(dependencies, list) or any(
+        tasks_by_id.get(str(dependency), {}).get("status") != "completed"
+        for dependency in dependencies
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Plan task prerequisites are not complete.",
+        )
+    action_items = _plan_task_actions(task, request.plan_task_id)
+    if any(item.get("status") != "applied" for item in action_items):
+        raise HTTPException(
+            status_code=409,
+            detail="All plan-task file changes must be applied before completion.",
+        )
+    criteria = plan_task.get("acceptance_criteria", [])
+    if not isinstance(criteria, list):
+        raise HTTPException(
+            status_code=409,
+            detail="Plan task acceptance criteria are invalid.",
+        )
+    supplied_results = [
+        result.model_dump() for result in request.acceptance_results
+    ]
+    results_by_criterion = {
+        str(result["criterion"]): result for result in supplied_results
+    }
+    if len(results_by_criterion) != len(supplied_results) or (
+        supplied_results
+        and set(results_by_criterion) != set(map(str, criteria))
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Provide exactly one outcome for every acceptance criterion."
+            ),
+        )
+    if not supplied_results:
+        supplied_results = [
+            {
+                "criterion": str(criterion),
+                "status": "not_verified",
+                "evidence": None,
+            }
+            for criterion in criteria
+        ]
+    result_statuses = {
+        str(result["status"]) for result in supplied_results
+    }
+    plan_task["acceptance_results"] = supplied_results
+    if "not_met" in result_statuses:
+        plan_task["verification_status"] = "failed"
+        _record_plan_task_status(
+            task,
+            request.plan_task_id,
+            "blocked",
+            "One or more acceptance criteria were not met.",
+            verification_notes=verification_notes,
+        )
+        task.verification_status = "failed"
+        task.validation_result = {
+            "success": False,
+            "kind": "acceptance_criteria",
+            "acceptance_results": supplied_results,
+        }
+        task.status = "failed"
+        task.stop_reason = (
+            "One or more acceptance criteria were not met; continue to propose a correction."
+        )
+        task.add_step(
+            "verification",
+            "failed",
+            "Acceptance criteria were not met",
+            output=json.dumps(supplied_results, ensure_ascii=True)[:MAX_AGENT_OUTPUT_CHARS],
+        )
+        task.persist()
+        return task.as_dict()
+    if "not_verified" in result_statuses:
+        plan_task["verification_status"] = "not_verified"
+        task.verification_status = "not_verified"
+        task.status = "awaiting_validation"
+        task.stop_reason = (
+            "Acceptance criteria remain not verified; provide an outcome and evidence for each criterion."
+        )
+        task.persist()
+        return task.as_dict()
+    if (
+        plan_task.get("task_type") == "verification"
+        and task.validation_command
+        and not (
+            task.validation_result
+            and task.validation_result.get("executed") is False
+        )
+        and not (
+            task.validation_result
+            and task.validation_result.get("success") is True
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Run the approved validation command to complete this verification task.",
+        )
+    has_scheduled_work = any(
+        item.get("status") == "scheduled" for item in task.actions
+    )
+    _record_plan_task_status(
+        task,
+        request.plan_task_id,
+        "completed",
+        "User confirmed the plan task's acceptance criteria.",
+        verification_notes=verification_notes,
+    )
+    plan_task["verification_status"] = "verified"
+    if has_scheduled_work:
+        task.validation_result = None
+    _advance_plan_execution(task)
+    return task.as_dict()
+
+
 @router.post("/tasks/{task_id}/validate", response_model=AgentTaskResponse)
 def run_agent_validation(
     task_id: str,
@@ -1149,7 +1843,7 @@ def run_agent_validation(
     task = _get_owned_task(task_id, user_id, db)
     if task.status != "awaiting_approval" or task.validation_command is None:
         raise HTTPException(status_code=409, detail="Task has no pending validation command.")
-    if any(item.get("status") == "awaiting_approval" for item in task.actions):
+    if _plan_validation_blockers(task):
         raise HTTPException(status_code=409, detail="Resolve all proposed changes before validation.")
     try:
         command = validate_agent_command(request.command)
@@ -1178,9 +1872,19 @@ def run_agent_validation(
             background_tasks.add_task(_plan_task, task.id, user_id)
             task.persist()
             return task.as_dict()
-        task.status = "completed"
-        task.stop_reason = "Validation was declined by the user."
-        task.add_step("finish", "completed", task.stop_reason)
+        if task.plan_details is not None:
+            task.status = "awaiting_validation"
+            task.verification_status = "not_verified"
+            task.validation_command = None
+            task.stop_reason = (
+                "Validation was declined; acceptance criteria remain not verified."
+            )
+        else:
+            task.status = "completed"
+            task.verification_status = "not_verified"
+            task.stop_reason = "Validation was declined by the user."
+            task.add_step("finish", "completed", task.stop_reason)
+        task.persist()
         return task.as_dict()
 
     if agent_tasks.transition(task.id, user_id, "awaiting_approval", "validating") is None:
@@ -1195,6 +1899,13 @@ def run_agent_validation(
             timeout_seconds=120,
         )
         task.validation_result = safe_result.model_dump()
+        task.verification_status = (
+            "verified"
+            if safe_result.success
+            else "not_verified"
+            if not safe_result.executed
+            else "failed"
+        )
         if synchronized_changes:
             task.changes = synchronized_changes
         if getattr(task, "status", None) == "cancelled":
@@ -1219,12 +1930,36 @@ def run_agent_validation(
             background_tasks.add_task(_plan_task, task.id, user_id)
             task.persist()
             return task.as_dict()
-        if safe_result.success:
-            task.status = "completed"
+        if safe_result.success and task.plan_details is not None:
             task.add_step("test", "completed", "Validation passed", output=safe_result.stdout)
-            task.add_step("finish", "completed", "Agent task completed")
+            _complete_plan_tasks_after_validation(task)
+            if task.status == "completed":
+                task.add_step("finish", "completed", "Agent task completed")
+        elif safe_result.success:
+            task.status = "completed"
+            task.verification_status = "not_verified"
+            task.stop_reason = (
+                "The approved command passed, but no structured acceptance criteria "
+                "were available for comparison."
+            )
+            task.add_step("test", "completed", "Validation passed", output=safe_result.stdout)
+            task.add_step("finish", "completed", task.stop_reason)
+        elif not safe_result.executed:
+            task.status = "awaiting_validation"
+            task.verification_status = "not_verified"
+            task.stop_reason = (
+                "Validation was not run because Docker is unavailable; acceptance "
+                "criteria remain not verified."
+            )
+            task.add_step(
+                "test",
+                "not_verified",
+                "Validation was not executed",
+                error=safe_result.stderr,
+            )
         else:
             task.status = "failed"
+            task.verification_status = "failed"
             task.stop_reason = (
                 "Maximum agent iterations reached."
                 if task.iteration >= MAX_AGENT_ITERATIONS
@@ -1237,6 +1972,7 @@ def run_agent_validation(
             )
     except ProjectWorkspaceSyncError as error:
         task.status = "failed"
+        task.verification_status = "not_verified"
         task.stop_reason = str(error)[:1000]
         task.add_step(
             "sync",
@@ -1248,6 +1984,7 @@ def run_agent_validation(
         if getattr(task, "status", None) == "cancelled":
             return task.as_dict()
         task.status = "failed"
+        task.verification_status = "not_verified"
         task.iteration += 1
         task.stop_reason = (
             "Maximum agent iterations reached."
@@ -1378,25 +2115,67 @@ async def _run_continuation_task(task_id: str, user_id: int) -> None:
         db = SessionLocal()
         tools = AgentTools(db, task.project_id, user_id)
         prior_result = task.validation_result or {}
-        context = tools.retrieve_context(task.task)[:20000]
+        context = tools.retrieve_context(task.task)[:8000]
         if task.current_context:
-            context = f"{task.current_context}\n\n{context}"[:20000]
+            context = (
+                f"CURRENT IDE CONTEXT:\n{task.current_context[:4000]}\n\n{context}"
+            )
+        context = (
+            "REPOSITORY INTELLIGENCE (detected from safe project files):\n"
+            f"{tools.project_intelligence()}\n\n{context}"
+        )[:20000]
         prompt = (
             "Validation failed. Diagnose the failure and return a correction "
-            "proposal only. Return a JSON object with plan, actions, and "
-            "validation_command using the same schema as the original plan. "
-            "Each action must be a CodeAction object with type=code_change, "
-            "operation=replace or create_file, file_path, description, and "
-            "the operation's required fields. For replace, include exact "
-            "start_line, end_line, old_code, and new_code from the provided "
-            "project context. For a new file, use operation=create_file and "
-            "put its full contents in new_code. Do not use type=create_file "
-            "or a content field. Use only commands from the existing agent "
-            "validation allowlist; use null if no validation command applies. "
+            "proposal only, using the same structured planning-result schema "
+            "as the original task. Preserve the user's requirements and completed "
+            "work. Focus only on the failed acceptance criteria and relevant "
+            "files; do not re-propose completed changes unless they are necessary "
+            "to fix the failure. Return status=clarification_required if a decision is "
+            "materially ambiguous; otherwise return status=ready with a valid "
+            "AgentPlan and complete CodeAction objects. For replace actions, "
+            "copy exact start_line, end_line, old_code, and new_code from the "
+            "provided project context. For new files, use operation=create_file "
+            "and put full contents in new_code. Use only the existing agent "
+            "validation allowlist. Use repository intelligence as file-derived "
+            "evidence and do not claim candidates were executed or verified. "
             "Do not apply changes.\n\n"
             f"TASK:\n{task.task}\n\n"
             f"VALIDATION RESULT:\n{str(prior_result)[:12000]}"
         )
+        prior_plan = task.plan_details or {}
+        prior_plan_tasks = prior_plan.get("tasks", [])
+        completed_tasks = (
+            [
+                row for row in prior_plan_tasks
+                if isinstance(row, dict) and row.get("status") == "completed"
+            ]
+            if isinstance(prior_plan_tasks, list)
+            else []
+        )
+        completed_history = [
+            row for row in task.task_history
+            if row.get("status") == "completed"
+        ][-20:]
+        applied_paths = []
+        for item in task.actions:
+            action_data = item.get("action")
+            if (
+                item.get("status") == "applied"
+                and isinstance(action_data, dict)
+                and isinstance(action_data.get("file_path"), str)
+            ):
+                applied_paths.append(action_data["file_path"])
+        completed_work = json.dumps({
+            "completed_plan_tasks": completed_tasks,
+            "completed_task_history": completed_history,
+            "already_applied_file_paths": sorted(set(applied_paths)),
+        }, ensure_ascii=True)[:8000]
+        prompt += f"\n\nCOMPLETED WORK TO PRESERVE:\n{completed_work}"
+        if task.clarification_history:
+            prompt += (
+                "\n\nUSER CLARIFICATIONS:\n"
+                + json.dumps(task.clarification_history[-10:], ensure_ascii=True)[:5000]
+            )
         plan_step = task.add_step(
             "plan",
             "running",
@@ -1413,33 +2192,99 @@ async def _run_continuation_task(task_id: str, user_id: int) -> None:
         task.persist()
         if getattr(task, "status", None) == "cancelled":
             return
-        plan, actions, command = TaskPlanner.parse(response)
-        for action in actions:
-            if action.operation != "create_file":
-                tools.resolve_file(action.file_path)
-        task.plan = plan
-        task.actions = []
+        existing_actions = [
+            CodeAction.model_validate(item["action"])
+            for item in task.actions
+            if item.get("status") == "applied"
+            and isinstance(item.get("action"), dict)
+        ]
+        for attempt in range(AI_AGENT_MAX_CORRECTION_RETRIES + 1):
+            try:
+                planning_result = TaskPlanner.parse_planning_result(
+                    response,
+                    existing_actions=existing_actions,
+                )
+                break
+            except ValueError as error:
+                if attempt >= AI_AGENT_MAX_CORRECTION_RETRIES:
+                    raise
+                retry_step = task.add_step(
+                    "plan",
+                    "running",
+                    "Repairing invalid correction proposal",
+                    input=(
+                        f"Correction repair attempt {attempt + 1} of "
+                        f"{AI_AGENT_MAX_CORRECTION_RETRIES}"
+                    ),
+                    error=str(error),
+                )
+                response = await ai_service.chat_json(
+                    message=TaskPlanner.correction_repair_prompt(
+                        TaskPlanner.include_clarifications(
+                            task.task,
+                            task.clarification_history,
+                        ),
+                        response,
+                        str(error),
+                        prior_result,
+                        completed_work,
+                    ),
+                    context=context,
+                    history=[],
+                )
+                retry_step.status = "completed"
+                retry_step.output = response
+                task.persist()
+                if getattr(task, "status", None) == "cancelled":
+                    return
+        if planning_result.status == "clarification_required":
+            task.clarification_questions = planning_result.clarification_questions
+            task.validation_command = None
+            task.actions = [
+                item for item in task.actions
+                if item.get("status") == "applied"
+            ]
+            task.status = "awaiting_clarification"
+            task.stop_reason = "The agent needs clarification before it can prepare a safe correction."
+            task.add_step(
+                "clarification",
+                "completed",
+                "Waiting for user clarification",
+                output="\n".join(task.clarification_questions),
+            )
+            task.persist()
+            return
+        assert planning_result.plan is not None
+        plan = [item.description for item in planning_result.plan.tasks]
+        actions = planning_result.actions
+        command = planning_result.validation_command
         for action in actions:
             if action.operation == "create_file":
-                task.actions.append({
-                    "action": action.model_dump(),
-                    "status": "awaiting_approval",
-                    "error": None,
-                })
+                if action.file_path in tools.list_project_files():
+                    raise ValueError(
+                        "Agent create_file action path already exists in the project."
+                    )
                 continue
-            project_file = tools.resolve_file(action.file_path)
-            task.actions.append({
-                "action": action.model_dump(),
-                "status": "awaiting_approval",
-                "error": None,
-            })
+            tools.resolve_file(action.file_path)
+        task.plan = plan
+        task.plan_details = planning_result.plan.model_dump(mode="json")
+        task.clarification_questions = []
+        prior_actions = [
+            item for item in task.actions
+            if item.get("status") == "applied"
+        ]
+        _assign_plan_action_records(
+            task,
+            planning_result.plan,
+            actions,
+            prior_actions,
+        )
+        task.initialize_plan_task_history()
         task.validation_command = command
-        task.status = "awaiting_approval" if actions or command else "failed"
-        task.stop_reason = None if actions or command else "No correction was proposed."
-        if task.status == "failed":
-            task.iteration = MAX_AGENT_ITERATIONS
+        task.validation_result = None
+        task.verification_status = "pending"
         task.add_step("analyze", "completed", "Prepared a bounded correction proposal")
-        task.persist()
+        _advance_plan_execution(task)
     except Exception as error:
         if getattr(task, "status", None) == "cancelled":
             return

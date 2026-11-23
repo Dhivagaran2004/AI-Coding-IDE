@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import json
 
 from openai import AsyncOpenAI
 
@@ -9,12 +10,111 @@ from App.service.AI.providers.base_provider import BaseLLMProvider
 class GroqProvider(BaseLLMProvider):
     """Groq chat completions over its OpenAI-compatible API."""
 
+    provider_name = "groq"
     BASE_URL = "https://api.groq.com/openai/v1"
     REQUEST_TIMEOUT_SECONDS = AI_REQUEST_TIMEOUT_SECONDS
+    API_KEY_NAME = "GROQ_API_KEY"
+    AGENT_TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List safe project files and directories.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a safe project file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_file",
+                "description": "Propose creating a project file for user approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_file",
+                "description": "Propose updating a project file for user approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_file",
+                "description": "Propose deleting a project file for user approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_command",
+                "description": "Propose an allowlisted validation command for approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_execution_result",
+                "description": "Read the latest sandbox execution result.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        },
+    ]
 
     def __init__(self, model: str, api_key: str):
         if not api_key:
-            raise ValueError("GROQ_API_KEY is required.")
+            raise ValueError(f"{self.API_KEY_NAME} is required.")
         self.model = model
         self.client = AsyncOpenAI(
             api_key=api_key,
@@ -29,12 +129,17 @@ class GroqProvider(BaseLLMProvider):
         context: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> str:
+        native_tool_mode = (
+            "Available tools:" in message
+            and '"type":"tool_call"' in message
+        )
         try:
             return await self.generate(
                 message,
                 context=context,
                 history=history,
                 json_mode=True,
+                native_tools=native_tool_mode,
             )
         except Exception as error:
             if getattr(error, "code", None) != "json_validate_failed":
@@ -59,14 +164,23 @@ class GroqProvider(BaseLLMProvider):
                 "project context and validated backend tools. Return exactly one "
                 "JSON object and no Markdown, code fences, or surrounding prose. "
                 "A tool request has type=\"tool_call\", name, and arguments. A final "
-                "plan has plan (an array of concise strings), actions (an array of "
-                "code changes), and validation_command (a string or null). Replace "
-                "actions must include type=\"code_change\", operation=\"replace\", "
+                "planning result has status (ready or clarification_required), "
+                "plan (a structured plan object or null), clarification_questions, "
+                "actions (an array of code changes), and validation_command "
+                "(a string or null). A ready plan contains objective, project "
+                "project type, scope, project understanding, assumptions, requirements, acceptance criteria, "
+                "technical approach, dependency-aware tasks, risks, and a validation "
+                "strategy. Each task includes its requirements, expected files, "
+                "acceptance criteria, and verification steps. For material "
+                "ambiguity, ask one to three focused questions and do not propose "
+                "a plan or actions. Replace actions must include "
+                "type=\"code_change\", operation=\"replace\", "
                 "file_path, description, 1-based start_line and end_line, old_code "
                 "copied exactly from context, and new_code. New files may use "
                 "operation=\"create_file\". Never invent file paths or old_code. "
                 "Do not claim to have changed files. File changes and commands "
-                "require user approval."
+                "require user approval. When native tool functions are available, "
+                "call one directly instead of returning a JSON tool_call envelope."
             )
         else:
             system_content = (
@@ -111,12 +225,18 @@ class GroqProvider(BaseLLMProvider):
         history: list[dict[str, str]] | None = None,
         *,
         json_mode: bool = False,
+        native_tools: bool = False,
     ) -> str:
         request_options = (
             {"response_format": {"type": "json_object"}}
-            if json_mode
+            if json_mode and not native_tools
             else {}
         )
+        if native_tools:
+            request_options.update({
+                "tools": self.AGENT_TOOLS,
+                "tool_choice": "auto",
+            })
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=self._messages(
@@ -128,7 +248,24 @@ class GroqProvider(BaseLLMProvider):
             temperature=0.2,
             **request_options,
         )
-        return response.choices[0].message.content or ""
+        result_message = response.choices[0].message
+        tool_calls = getattr(result_message, "tool_calls", None) or []
+        if tool_calls:
+            if len(tool_calls) != 1:
+                raise ValueError(
+                    "The agent provider returned more than one tool call in a turn."
+                )
+            tool_call = tool_calls[0]
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+            except (TypeError, json.JSONDecodeError):
+                arguments = tool_call.function.arguments
+            return json.dumps({
+                "type": "tool_call",
+                "name": tool_call.function.name,
+                "arguments": arguments,
+            })
+        return result_message.content or ""
 
     async def generate_stream(
         self,

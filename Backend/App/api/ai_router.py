@@ -51,6 +51,7 @@ from App.service.AI.index.indexed_context_service import (
 )
 from App.service.AI.index.vector_rag_service import VectorRAGService
 from App.service.AI.providers.provider_factory import (
+    get_fallback_llm_provider,
     get_llm_provider,
 )
 from App.service.AI.usage.usage_service import (
@@ -207,11 +208,22 @@ def _persist_assistant_message(
 
 try:
     ai_service = AIService(
-        provider=get_llm_provider(LLM_PROVIDER)
+        provider=get_llm_provider(LLM_PROVIDER),
+        fallback_provider=get_fallback_llm_provider(LLM_PROVIDER),
     )
 except Exception as exc:
     ai_service = None
     logger.warning("AI provider initialization failed (%s).", type(exc).__name__)
+
+
+def _active_provider_details() -> tuple[str, str]:
+    provider = getattr(ai_service, "current_provider", None)
+    if provider is None:
+        return LLM_PROVIDER, LLM_MODEL
+    return (
+        getattr(provider, "provider_name", LLM_PROVIDER),
+        getattr(provider, "model", LLM_MODEL),
+    )
 
 
 # =========================================================
@@ -561,6 +573,7 @@ async def _chat(
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
 
                     response_text = "".join(collected)
+                    active_provider, active_model = _active_provider_details()
                     if usage_service is not None and usage_id is not None:
                         usage_service.finish_request(
                             usage_id,
@@ -569,12 +582,14 @@ async def _chat(
                                 response_text
                             ),
                             request_status="succeeded",
+                            provider=active_provider,
+                            model=active_model,
                         )
                     usage_completed = True
                     final_response = AIChatResponse(
                         message=response_text,
-                        provider=LLM_PROVIDER,
-                        model=LLM_MODEL,
+                        provider=active_provider,
+                        model=active_model,
                         code_action=(
                             _extract_code_action(response_text)
                             if request.mode != "plan"
@@ -675,19 +690,22 @@ async def _chat(
             context=context,
             history=history,
         )
+        active_provider, active_model = _active_provider_details()
         if usage_service is not None and usage_id is not None:
             usage_service.finish_request(
                 usage_id,
                 input_tokens=input_token_count,
                 output_tokens=usage_service.estimate_tokens(response),
                 request_status="succeeded",
+                provider=active_provider,
+                model=active_model,
             )
             usage_completed = True
 
         chat_response = AIChatResponse(
             message=response,
-            provider=LLM_PROVIDER,
-            model=LLM_MODEL,
+            provider=active_provider,
+            model=active_model,
             code_action=(
                 _extract_code_action(response)
                 if request.mode != "plan"
@@ -750,40 +768,40 @@ def _provider_error_detail(error: Exception) -> str:
         "ReadTimeout",
         "TimeoutException",
     }:
-        return "Groq request timed out or the connection failed. Try again."
+        return "AI provider request timed out or the connection failed. Try again."
 
     status_code = getattr(error, "status_code", None)
     if not isinstance(status_code, int):
         return "AI provider is temporarily unavailable. Try again."
 
     if status_code in (408, 504):
-        return "Groq request timed out. Try again."
+        return "AI provider request timed out. Try again."
     if status_code in (401, 403):
         return (
             f"AI provider authentication failed (HTTP {status_code}). "
-            "Check GROQ_API_KEY and provider access."
+            "Check the configured provider API key and access."
         )
     if status_code == 404:
         return (
-            "Configured Groq model was not found (HTTP 404). "
-            "Check GROQ_MODEL."
+            "Configured AI model was not found (HTTP 404). "
+            "Check the provider model setting."
         )
     if status_code == 429:
         return (
-            "Groq rate limit or quota was reached (HTTP 429). "
-            "Check your Groq plan and try again later."
+            "AI provider rate limit or quota was reached (HTTP 429). "
+            "Check your provider plan and try again later."
         )
     if status_code == 402:
         return (
-            "Groq rejected the request because of a billing or quota issue "
-            "(HTTP 402). Check your Groq account limits."
+            "AI provider rejected the request because of a billing or quota issue "
+            "(HTTP 402). Check your provider account limits."
         )
     if status_code in (400, 422):
         return (
             f"AI provider rejected the request (HTTP {status_code}). "
             "Check model compatibility and request limits."
         )
-    return f"Groq returned HTTP {status_code}. Check provider status and settings."
+    return f"AI provider returned HTTP {status_code}. Check provider status and settings."
 
 
 def _usage_error_status(error: Exception) -> str:

@@ -1,21 +1,38 @@
+from pathlib import Path
 from dotenv import load_dotenv
 import os
 import math
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent
+
+for env_path in (APP_DIR / ".env", ROOT_DIR / ".env"):
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
+)
 
 
 # Groq chat configuration
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-LLM_MODEL = GROQ_MODEL
+
+# Gemini chat configuration (uses Google's OpenAI-compatible endpoint)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+LLM_MODEL = (
+    GEMINI_MODEL
+    if LLM_PROVIDER.strip().lower() == "gemini"
+    else GROQ_MODEL
+)
 
 # Legacy Hugging Face credential used only by repository embeddings.
 LLM_API_KEY = os.getenv("LLM_API_KEY")
@@ -31,6 +48,9 @@ AI_RETRY_BASE_DELAY = float(os.getenv("AI_RETRY_BASE_DELAY", "0.25"))
 AI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60"))
 AI_INDEX_MAX_FILE_CHARS = int(os.getenv("AI_INDEX_MAX_FILE_CHARS", "500000"))
 AI_AGENT_MAX_TOOL_CALLS = int(os.getenv("AI_AGENT_MAX_TOOL_CALLS", "8"))
+AI_AGENT_MAX_CORRECTION_RETRIES = int(
+    os.getenv("AI_AGENT_MAX_CORRECTION_RETRIES", "2")
+)
 
 if min(
     AI_DAILY_REQUEST_LIMIT,
@@ -40,6 +60,7 @@ if min(
     AI_REQUEST_TIMEOUT_SECONDS,
     AI_INDEX_MAX_FILE_CHARS,
     AI_AGENT_MAX_TOOL_CALLS,
+    AI_AGENT_MAX_CORRECTION_RETRIES,
 ) < 0:
     raise ValueError("AI limits and retry settings cannot be negative.")
 if AI_CONTEXT_MAX_CHARS <= 0 or AI_INDEX_MAX_FILE_CHARS == 0:
@@ -50,5 +71,7 @@ if AI_REQUEST_TIMEOUT_SECONDS < 1 or AI_REQUEST_TIMEOUT_SECONDS > 300:
     raise ValueError("AI_REQUEST_TIMEOUT_SECONDS must be between 1 and 300.")
 if AI_AGENT_MAX_TOOL_CALLS < 1 or AI_AGENT_MAX_TOOL_CALLS > 20:
     raise ValueError("AI_AGENT_MAX_TOOL_CALLS must be between 1 and 20.")
+if AI_AGENT_MAX_CORRECTION_RETRIES > 5:
+    raise ValueError("AI_AGENT_MAX_CORRECTION_RETRIES cannot exceed 5.")
 if not math.isfinite(AI_RETRY_BASE_DELAY) or AI_RETRY_BASE_DELAY < 0:
     raise ValueError("AI_RETRY_BASE_DELAY must be a finite non-negative number.")

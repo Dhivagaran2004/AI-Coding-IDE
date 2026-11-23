@@ -18,6 +18,57 @@ export type AIMessage = {
     content: string;
 };
 
+export type AgentPlanRequirement = {
+    id: string;
+    description: string;
+    category: "functional" | "technical" | "quality" | "documentation" | "analysis";
+};
+
+export type AgentAcceptanceCriterionResult = {
+    criterion: string;
+    status: "met" | "not_met" | "not_verified";
+    evidence?: string | null;
+};
+
+export type AgentPlanTask = {
+    id: string;
+    task_type: "implementation" | "analysis" | "verification" | "setup" | "documentation";
+    description: string;
+    objective: string;
+    dependencies: string[];
+    requirement_ids: string[];
+    expected_files: string[];
+    required_tools: string[];
+    acceptance_criteria: string[];
+    acceptance_results: AgentAcceptanceCriterionResult[];
+    verification_steps: string[];
+    status: "pending" | "in_progress" | "applied" | "completed" | "blocked";
+    verification_status: "pending" | "verified" | "not_verified" | "failed" | "not_required";
+};
+
+export type AgentPlan = {
+    plan_id: string;
+    objective: string;
+    project_type: string;
+    scope: string;
+    project_understanding: string;
+    assumptions: string[];
+    requirements: AgentPlanRequirement[];
+    acceptance_criteria: string[];
+    technical_approach: string;
+    tasks: AgentPlanTask[];
+    risks: string[];
+    validation_strategy: string[];
+};
+
+export type AgentValidationResult =
+    | TerminalAIContext
+    | {
+        success: false;
+        kind: "acceptance_criteria";
+        acceptance_results: AgentAcceptanceCriterionResult[];
+    };
+
 export type AIChatRequest = {
     message: string;
     mode?: "ask" | "plan" | "edit";
@@ -40,17 +91,30 @@ export type AgentTask = {
     project_id: number;
     task: string;
     mode: "agent";
-    status: "pending" | "planning" | "awaiting_approval" | "executing" | "validating" | "paused" | "failed" | "completed" | "cancelled";
+    status: "pending" | "planning" | "awaiting_approval" | "awaiting_clarification" | "awaiting_validation" | "executing" | "validating" | "paused" | "failed" | "completed" | "cancelled";
     updated_at: string;
     plan: string[];
+    plan_details?: AgentPlan | null;
+    verification_status?: "pending" | "verified" | "not_verified" | "failed";
+    task_history: {
+        plan_id: string;
+        iteration: number;
+        plan_task_id: string;
+        status: AgentPlanTask["status"];
+        description: string;
+        verification_notes?: string;
+        created_at: string;
+    }[];
+    clarification_questions: string[];
     actions: {
         action: CodeAction;
-        status: "awaiting_approval" | "applied" | "reverted" | "rejected" | "failed";
+        status: "scheduled" | "awaiting_approval" | "applied" | "reverted" | "rejected" | "failed" | "blocked";
+        plan_task_id?: string | null;
         error?: string | null;
     }[];
     tool_calls_used: number;
     validation_command?: string | null;
-    validation_result?: TerminalAIContext | null;
+    validation_result?: AgentValidationResult | null;
     steps: {
         sequence: number;
         type: string;
@@ -65,6 +129,22 @@ export type AgentTask = {
     changes?: { path: string; content: string; file_id: number; deleted?: boolean }[];
     change_history: { rolled_back?: boolean }[];
 };
+
+type AgentTaskApiResponse = Omit<
+    AgentTask,
+    "task_history" | "clarification_questions"
+> & {
+    task_history?: AgentTask["task_history"];
+    clarification_questions?: string[];
+};
+
+function normalizeAgentTask(task: AgentTaskApiResponse): AgentTask {
+    return {
+        ...task,
+        task_history: task.task_history ?? [],
+        clarification_questions: task.clarification_questions ?? [],
+    };
+}
 
 export type AIChatResponse = {
     message: string;
@@ -280,35 +360,35 @@ export async function createAgentTask(
         terminal_context?: TerminalAIContext | null;
     },
 ): Promise<AgentTask> {
-    const response = await api.post<AgentTask>("/ai/agent/tasks", {
+    const response = await api.post<AgentTaskApiResponse>("/ai/agent/tasks", {
         project_id: projectId,
         task,
         ...context,
     });
-    return response.data;
+    return normalizeAgentTask(response.data);
 }
 
 export async function getAgentTask(taskId: string): Promise<AgentTask> {
-    const response = await api.get<AgentTask>(`/ai/agent/tasks/${taskId}`);
-    return response.data;
+    const response = await api.get<AgentTaskApiResponse>(`/ai/agent/tasks/${taskId}`);
+    return normalizeAgentTask(response.data);
 }
 
 export async function getAgentTasks(projectId?: number): Promise<AgentTask[]> {
-    const response = await api.get<AgentTask[]>("/ai/agent/tasks", {
+    const response = await api.get<AgentTaskApiResponse[]>("/ai/agent/tasks", {
         params: projectId === undefined ? undefined : { project_id: projectId },
     });
-    return response.data;
+    return response.data.map(normalizeAgentTask);
 }
 
 export async function approveAgentChanges(
     taskId: string,
     approval: { action_indexes?: number[]; reject_indexes?: number[]; accept_all?: boolean; reject_all?: boolean },
 ): Promise<AgentTask> {
-    const response = await api.post<AgentTask>(
+    const response = await api.post<AgentTaskApiResponse>(
         `/ai/agent/tasks/${taskId}/approve`,
         approval,
     );
-    return response.data;
+    return normalizeAgentTask(response.data);
 }
 
 export async function approveAgentValidation(
@@ -316,24 +396,52 @@ export async function approveAgentValidation(
     command: string,
     approved: boolean,
 ): Promise<AgentTask> {
-    const response = await api.post<AgentTask>(
+    const response = await api.post<AgentTaskApiResponse>(
         `/ai/agent/tasks/${taskId}/validate`,
         { command, approved },
     );
-    return response.data;
+    return normalizeAgentTask(response.data);
+}
+
+export async function completeAgentPlanTask(
+    taskId: string,
+    planTaskId: string,
+    verificationNotes: string,
+    acceptanceResults: AgentAcceptanceCriterionResult[] = [],
+): Promise<AgentTask> {
+    const response = await api.post<AgentTaskApiResponse>(
+        `/ai/agent/tasks/${taskId}/plan-tasks/complete`,
+        {
+            plan_task_id: planTaskId,
+            verification_notes: verificationNotes,
+            acceptance_results: acceptanceResults,
+        },
+    );
+    return normalizeAgentTask(response.data);
+}
+
+export async function clarifyAgentTask(
+    taskId: string,
+    answer: string,
+): Promise<AgentTask> {
+    const response = await api.post<AgentTaskApiResponse>(
+        `/ai/agent/tasks/${taskId}/clarify`,
+        { answer },
+    );
+    return normalizeAgentTask(response.data);
 }
 
 export async function continueAgentTask(taskId: string): Promise<AgentTask> {
-    const response = await api.post<AgentTask>(`/ai/agent/tasks/${taskId}/continue`);
-    return response.data;
+    const response = await api.post<AgentTaskApiResponse>(`/ai/agent/tasks/${taskId}/continue`);
+    return normalizeAgentTask(response.data);
 }
 
 export async function cancelAgentTask(taskId: string): Promise<AgentTask> {
-    const response = await api.post<AgentTask>(`/ai/agent/tasks/${taskId}/cancel`);
-    return response.data;
+    const response = await api.post<AgentTaskApiResponse>(`/ai/agent/tasks/${taskId}/cancel`);
+    return normalizeAgentTask(response.data);
 }
 
 export async function undoAgentTask(taskId: string): Promise<AgentTask> {
-    const response = await api.post<AgentTask>(`/ai/agent/tasks/${taskId}/undo`);
-    return response.data;
+    const response = await api.post<AgentTaskApiResponse>(`/ai/agent/tasks/${taskId}/undo`);
+    return normalizeAgentTask(response.data);
 }

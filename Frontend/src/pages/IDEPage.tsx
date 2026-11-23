@@ -2,13 +2,16 @@ import {
     useEffect,
     useState,
     useRef,
+    type FormEvent,
 } from "react";
 
-import CodeEditor
-    from "../components/editor/CodeEditor";
+import CodeEditor, {
+    type CodeEditorHandle,
+} from "../components/editor/CodeEditor";
 
-import Terminal
-    from "../components/terminal/Terminal";
+import Terminal, {
+    type TerminalHandle,
+} from "../components/terminal/Terminal";
 
 import {
     getProjectFileTree,
@@ -27,16 +30,28 @@ import {
     useNavigate,
     useParams,
 } from "react-router-dom";
+import { createPortal } from "react-dom";
+import { useAuth } from "../context/AuthContext";
 
 import {
-    ArrowLeft,
     Code2,
+    FilePlus,
+    FolderPlus,
+    GitBranch,
+    Pencil,
     Save,
     X,
 } from "lucide-react";
 
 import FileExplorer from
     "../components/explorer/FileExplorer";
+import IDEActivityBar, {
+    type IDEActivityView,
+} from "../components/ide/IDEActivityBar";
+import ProjectSearchPanel from "../components/ide/ProjectSearchPanel";
+import IDEMenuBar, {
+    type IDEMenu,
+} from "../components/ide/IDEMenuBar";
 
 import type {
     FileTreeNode,
@@ -63,6 +78,26 @@ interface EditorTab {
     isDirty: boolean;
 }
 
+type NameDialog =
+    | {
+        kind: "file";
+        parentId: number | null;
+    }
+    | {
+        kind: "folder";
+        parentId: number | null;
+    }
+    | {
+        kind: "rename";
+        node: FileTreeNode;
+    };
+
+interface TabContextMenuState {
+    fileId: number;
+    x: number;
+    y: number;
+}
+
 
 // =========================================
 // IDE Page
@@ -71,6 +106,7 @@ interface EditorTab {
 export default function IDEPage() {
 
     const navigate = useNavigate();
+    const { logout } = useAuth();
 
 
     const {
@@ -108,10 +144,49 @@ export default function IDEPage() {
     const [gitDiffStaged, setGitDiffStaged] = useState(false);
     const [gitDiffTruncated, setGitDiffTruncated] = useState(false);
     const [gitError, setGitError] = useState("");
+    const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
+    const [nameDialogValue, setNameDialogValue] = useState("");
+    const [activeSidebar, setActiveSidebar] =
+        useState<IDEActivityView | null>("explorer");
+    const [isTerminalVisible, setIsTerminalVisible] = useState(true);
+    const [isChatVisible, setIsChatVisible] = useState(true);
+    const [isShortcutHelpOpen, setIsShortcutHelpOpen] = useState(false);
+    const [tabContextMenu, setTabContextMenu] =
+        useState<TabContextMenuState | null>(null);
+    const [pendingCloseTabIds, setPendingCloseTabIds] =
+        useState<number[] | null>(null);
 
     useEffect(() => {
         setSelectedCode(null);
     }, [activeTabId]);
+
+    useEffect(() => {
+        if (!tabContextMenu) {
+            return;
+        }
+
+        const handlePointerDown = (event: PointerEvent) => {
+            if (
+                event.target instanceof Element &&
+                event.target.closest("[data-editor-tab-menu]")
+            ) {
+                return;
+            }
+            setTabContextMenu(null);
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setTabContextMenu(null);
+            }
+        };
+
+        document.addEventListener("pointerdown", handlePointerDown);
+        document.addEventListener("keydown", handleKeyDown);
+        return () => {
+            document.removeEventListener("pointerdown", handlePointerDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [tabContextMenu]);
 
 
     // =========================================
@@ -184,6 +259,8 @@ export default function IDEPage() {
 
     const workspaceRef = useRef<HTMLDivElement | null>(null);
     const centerRef = useRef<HTMLDivElement | null>(null);
+    const editorRef = useRef<CodeEditorHandle | null>(null);
+    const terminalRef = useRef<TerminalHandle | null>(null);
 
     // Synchronize to localStorage
     useEffect(() => {
@@ -208,9 +285,9 @@ export default function IDEPage() {
             if (activeResizer === "explorer") {
                 if (!workspaceRef.current) return;
                 const rect = workspaceRef.current.getBoundingClientRect();
-                const newWidth = event.clientX - rect.left;
+                const newWidth = event.clientX - rect.left - 48;
                 const minWidth = 160;
-                const maxWidth = Math.max(minWidth, Math.min(600, rect.width - 450));
+                const maxWidth = Math.max(minWidth, Math.min(600, rect.width - 498));
                 const clamped = Math.max(minWidth, Math.min(maxWidth, newWidth));
                 setExplorerWidth(clamped);
             } else if (activeResizer === "ai") {
@@ -291,6 +368,22 @@ export default function IDEPage() {
             setGitDiffStaged(staged);
         }
     };
+
+    function handleActivitySelect(view: IDEActivityView) {
+        setActiveSidebar((current) => current === view ? null : view);
+    }
+
+    function resetLayout() {
+        setExplorerWidth(240);
+        setAiPanelWidth(360);
+        setTerminalHeight(240);
+        setActiveSidebar("explorer");
+    }
+
+    function handleLogout() {
+        logout();
+        navigate("/login");
+    }
 
 
     // =========================================
@@ -686,103 +779,47 @@ export default function IDEPage() {
     // Close Tab
     // =========================================
 
-    function handleCloseTab(
-        fileId: number
-    ) {
+    function closeTabsImmediately(fileIds: number[]) {
+        const closingIds = new Set(fileIds);
+        const activeIndex = tabs.findIndex((tab) => tab.file.id === activeTabId);
+        const remainingTabs = tabs.filter((tab) => !closingIds.has(tab.file.id));
 
-        const tabToClose =
-            tabs.find(
-                tab =>
-                    tab.file.id === fileId
-            );
+        setTabs(remainingTabs);
+        if (activeTabId !== null && closingIds.has(activeTabId)) {
+            const previousTab = tabs
+                .slice(0, activeIndex)
+                .reverse()
+                .find((tab) => !closingIds.has(tab.file.id));
+            const nextTab = tabs
+                .slice(activeIndex + 1)
+                .find((tab) => !closingIds.has(tab.file.id));
+            setActiveTabId(previousTab?.file.id ?? nextTab?.file.id ?? null);
+            setSaveError("");
+        }
+    }
 
-
-        if (!tabToClose) {
-
+    function handleCloseTabs(fileIds: number[]) {
+        const idsToClose = [...new Set(fileIds)].filter((id) =>
+            tabs.some((tab) => tab.file.id === id),
+        );
+        if (idsToClose.length === 0) {
             return;
         }
 
-
-        // =====================================
-        // Check Unsaved Changes
-        // =====================================
-
-        if (tabToClose.isDirty) {
-
-            const confirmed =
-                window.confirm(
-                    `"${tabToClose.file.name}" has unsaved changes. Close anyway?`
-                );
-
-
-            if (!confirmed) {
-
-                return;
-            }
-        }
-
-
-        const tabIndex =
-            tabs.findIndex(
-                tab =>
-                    tab.file.id === fileId
-            );
-
-
-        const remainingTabs =
-            tabs.filter(
-                tab =>
-                    tab.file.id !== fileId
-            );
-
-
-        setTabs(
-            remainingTabs
+        const hasUnsavedChanges = tabs.some(
+            (tab) => idsToClose.includes(tab.file.id) && tab.isDirty,
         );
-
-
-        // =====================================
-        // Closing Active Tab
-        // =====================================
-
-        if (
-            activeTabId === fileId
-        ) {
-
-            if (
-                remainingTabs.length === 0
-            ) {
-
-                setActiveTabId(null);
-
-                setSaveError("");
-
-                return;
-            }
-
-
-            // Prefer the tab to the left
-
-            const previousTabIndex =
-                Math.max(
-                    0,
-                    tabIndex - 1
-                );
-
-
-            const nextActiveTab =
-                remainingTabs[
-                previousTabIndex
-                ];
-
-
-            setActiveTabId(
-                nextActiveTab.file.id
-            );
-
-
-            setSaveError("");
+        if (hasUnsavedChanges) {
+            setPendingCloseTabIds(idsToClose);
+            setTabContextMenu(null);
+            return;
         }
+        closeTabsImmediately(idsToClose);
+        setTabContextMenu(null);
+    }
+
+    function handleCloseTab(fileId: number) {
+        handleCloseTabs([fileId]);
     }
 
 
@@ -948,6 +985,8 @@ export default function IDEPage() {
             return;
         }
 
+        const fileIdToSave = activeTab.file.id;
+        const contentToSave = activeTab.content;
 
         console.log(
             "================================="
@@ -998,10 +1037,10 @@ export default function IDEPage() {
             const updatedFile =
                 await updateProjectFile(
                     numericProjectId,
-                    activeTab.file.id,
+                    fileIdToSave,
                     {
                         content:
-                            activeTab.content,
+                            contentToSave,
                     }
                 );
 
@@ -1021,7 +1060,7 @@ export default function IDEPage() {
 
                             if (
                                 tab.file.id !==
-                                activeTab.file.id
+                                fileIdToSave
                             ) {
 
                                 return tab;
@@ -1032,7 +1071,7 @@ export default function IDEPage() {
 
                                 ...tab,
 
-                                isDirty: false,
+                                isDirty: tab.content !== contentToSave,
 
                             };
 
@@ -1124,8 +1163,15 @@ export default function IDEPage() {
     // =========================================
 
     async function handleCreateFile(
-        parentId: number | null
+        parentId: number | null,
+        requestedName?: string
     ) {
+
+        if (requestedName === undefined) {
+            setNameDialog({ kind: "file", parentId });
+            setNameDialogValue("");
+            return;
+        }
 
         console.log(
             "IDEPage.handleCreateFile called"
@@ -1144,11 +1190,7 @@ export default function IDEPage() {
         );
 
 
-        const name =
-            window.prompt(
-                "Enter file name:"
-            );
-
+        const name = requestedName;
 
         console.log(
             "File name entered:",
@@ -1235,16 +1277,17 @@ export default function IDEPage() {
     // =========================================
 
     async function handleCreateFolder(
-        parentId: number | null
+        parentId: number | null,
+        requestedName?: string
     ) {
 
-        const name =
-            window.prompt(
-                "Enter folder name:"
-            );
+        if (requestedName === undefined) {
+            setNameDialog({ kind: "folder", parentId });
+            setNameDialogValue("");
+            return;
+        }
 
-
-        if (!name?.trim()) {
+        if (!requestedName.trim()) {
 
             return;
         }
@@ -1253,7 +1296,7 @@ export default function IDEPage() {
         const data: ProjectFileCreate = {
 
             name:
-                name.trim(),
+                requestedName.trim(),
 
             type:
                 "folder",
@@ -1297,18 +1340,20 @@ export default function IDEPage() {
     // =========================================
 
     async function handleRename(
-        node: FileTreeNode
+        node: FileTreeNode,
+        requestedName?: string
     ) {
 
-        const newName =
-            window.prompt(
-                "Enter new name:",
-                node.name
-            );
+        if (requestedName === undefined) {
+            setNameDialog({ kind: "rename", node });
+            setNameDialogValue(node.name);
+            return;
+        }
 
+        const newName = requestedName;
 
         if (
-            !newName?.trim() ||
+            !newName.trim() ||
             newName.trim() === node.name
         ) {
 
@@ -1386,6 +1431,26 @@ export default function IDEPage() {
                 error.response?.data?.detail ??
                 "Failed to rename."
             );
+        }
+    }
+
+    function handleNameDialogSubmit(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const dialog = nameDialog;
+        const name = nameDialogValue.trim();
+
+        if (!dialog || !name) {
+            return;
+        }
+
+        setNameDialog(null);
+
+        if (dialog.kind === "file") {
+            void handleCreateFile(dialog.parentId, name);
+        } else if (dialog.kind === "folder") {
+            void handleCreateFolder(dialog.parentId, name);
+        } else {
+            void handleRename(dialog.node, name);
         }
     }
 
@@ -1516,6 +1581,164 @@ export default function IDEPage() {
         }
     }
 
+    function focusTerminal() {
+        setIsTerminalVisible(true);
+        window.setTimeout(() => terminalRef.current?.focus(), 0);
+    }
+
+    const menuDefinitions: IDEMenu[] = [
+        {
+            label: "File",
+            items: [
+                { label: "New File", onSelect: () => void handleCreateFile(null) },
+                { label: "New Folder", onSelect: () => void handleCreateFolder(null) },
+                {
+                    label: "Save",
+                    shortcut: "Ctrl+S",
+                    disabled: !activeTab?.isDirty || isSaving,
+                    onSelect: () => void saveFile(),
+                },
+                {
+                    label: "Close Active Tab",
+                    disabled: activeTabId === null,
+                    onSelect: () => {
+                        if (activeTabId !== null) {
+                            handleCloseTab(activeTabId);
+                        }
+                    },
+                },
+                {
+                    label: "Close Other Tabs",
+                    disabled: activeTabId === null || tabs.length < 2,
+                    onSelect: () =>
+                        handleCloseTabs(
+                            tabs
+                                .filter((tab) => tab.file.id !== activeTabId)
+                                .map((tab) => tab.file.id),
+                        ),
+                },
+                {
+                    label: "Close All Tabs",
+                    disabled: tabs.length === 0,
+                    onSelect: () =>
+                        handleCloseTabs(tabs.map((tab) => tab.file.id)),
+                },
+                { label: "Back to Projects", onSelect: handleBack },
+            ],
+        },
+        {
+            label: "Edit",
+            items: [
+                {
+                    label: "Undo",
+                    shortcut: "Ctrl+Z",
+                    disabled: !activeTab,
+                    onSelect: () => editorRef.current?.runAction("undo"),
+                },
+                {
+                    label: "Redo",
+                    shortcut: "Ctrl+Y",
+                    disabled: !activeTab,
+                    onSelect: () => editorRef.current?.runAction("redo"),
+                },
+                {
+                    label: "Find",
+                    shortcut: "Ctrl+F",
+                    disabled: !activeTab,
+                    onSelect: () => editorRef.current?.runAction("find"),
+                },
+                {
+                    label: "Select All",
+                    shortcut: "Ctrl+A",
+                    disabled: !activeTab,
+                    onSelect: () => editorRef.current?.runAction("selectAll"),
+                },
+                {
+                    label: "Undo AI Change",
+                    disabled: !aiUndoHistory.some((entry) => entry.tabId === activeTabId),
+                    onSelect: handleUndoAIChange,
+                },
+            ],
+        },
+        {
+            label: "Selection",
+            items: [
+                {
+                    label: "Select All",
+                    shortcut: "Ctrl+A",
+                    disabled: !activeTab,
+                    onSelect: () => editorRef.current?.runAction("selectAll"),
+                },
+                {
+                    label: "Search Workspace",
+                    onSelect: () => setActiveSidebar("search"),
+                },
+            ],
+        },
+        {
+            label: "View",
+            items: [
+                { label: "Explorer", onSelect: () => setActiveSidebar("explorer") },
+                { label: "Search", onSelect: () => setActiveSidebar("search") },
+                {
+                    label: "Source Control",
+                    onSelect: () => setActiveSidebar("source-control"),
+                },
+                {
+                    label: "Toggle Sidebar",
+                    shortcut: "Ctrl+B",
+                    onSelect: () =>
+                        setActiveSidebar((current) => current ? null : "explorer"),
+                },
+                {
+                    label: "Toggle Terminal",
+                    shortcut: "Ctrl+`",
+                    onSelect: () => setIsTerminalVisible((visible) => !visible),
+                },
+                {
+                    label: "Toggle AI Chat",
+                    onSelect: () => setIsChatVisible((visible) => !visible),
+                },
+            ],
+        },
+        {
+            label: "Go",
+            items: [
+                { label: "Back to Projects", onSelect: handleBack },
+                { label: "Open Explorer", onSelect: () => setActiveSidebar("explorer") },
+                { label: "Open Search", onSelect: () => setActiveSidebar("search") },
+            ],
+        },
+        {
+            label: "Run",
+            items: [
+                {
+                    label: "Run and Debug",
+                    onSelect: () => setActiveSidebar("run-debug"),
+                },
+                { label: "Focus Terminal", onSelect: focusTerminal },
+            ],
+        },
+        {
+            label: "Terminal",
+            items: [
+                { label: "Focus Terminal", onSelect: focusTerminal },
+                {
+                    label: "Toggle Integrated Terminal",
+                    onSelect: () => setIsTerminalVisible((visible) => !visible),
+                },
+            ],
+        },
+        {
+            label: "Help",
+            items: [
+                {
+                    label: "Keyboard Shortcuts",
+                    onSelect: () => setIsShortcutHelpOpen(true),
+                },
+            ],
+        },
+    ];
 
     // =========================================
     // UI
@@ -1540,46 +1763,13 @@ export default function IDEPage() {
             <header className="ide-header">
 
                 <div className="ide-header-left">
-
-                    <button
-                        type="button"
-                        className="ide-back-button"
-                        onClick={handleBack}
-                        title="Back to projects"
-                    >
-
-                        <ArrowLeft
-                            size={18}
-                        />
-
-                    </button>
-
-
-                    <Code2
-                        size={20}
-                    />
-
-
-                    <span>
-                        AI Coding IDE
-                    </span>
+                    <IDEMenuBar menus={menuDefinitions} />
 
                 </div>
 
 
                 <div className="ide-project-info">
                     Project #{projectId}
-                    <button
-                        type="button"
-                        className="ide-git-status"
-                        onClick={() => {
-                            setGitDiff("");
-                            void openGitDiff(false);
-                        }}
-                        title={gitError || "Open read-only Git status and diff"}
-                    >
-                        Git {gitStatus?.branch || "—"} · {gitStatus?.changed_files.length ?? "…"}
-                    </button>
                 </div>
 
             </header>
@@ -1638,6 +1828,271 @@ export default function IDEPage() {
                 </div>
             )}
 
+            {nameDialog && (
+                <div
+                    className="ide-name-overlay"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setNameDialog(null);
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            setNameDialog(null);
+                        }
+                    }}
+                >
+                    <section
+                        className="ide-name-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="ide-name-dialog-title"
+                    >
+                        <header className="ide-name-dialog__header">
+                            <span className="ide-name-dialog__icon">
+                                {nameDialog.kind === "file" ? (
+                                    <FilePlus size={18} />
+                                ) : nameDialog.kind === "folder" ? (
+                                    <FolderPlus size={18} />
+                                ) : (
+                                    <Pencil size={18} />
+                                )}
+                            </span>
+                            <div>
+                                <h2 id="ide-name-dialog-title">
+                                    {nameDialog.kind === "file"
+                                        ? "Create new file"
+                                        : nameDialog.kind === "folder"
+                                            ? "Create new folder"
+                                            : "Rename item"}
+                                </h2>
+                                <p>
+                                    {nameDialog.kind === "rename"
+                                        ? "Choose a new name for this item."
+                                        : "Give your project item a name to get started."}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                className="ide-name-dialog__close"
+                                onClick={() => setNameDialog(null)}
+                                aria-label="Close dialog"
+                            >
+                                <X size={18} />
+                            </button>
+                        </header>
+                        <form onSubmit={handleNameDialogSubmit}>
+                            <label htmlFor="ide-name-input">
+                                {nameDialog.kind === "rename"
+                                    ? "New name"
+                                    : nameDialog.kind === "folder"
+                                        ? "Folder name"
+                                        : "File name"}
+                            </label>
+                            <input
+                                id="ide-name-input"
+                                autoFocus
+                                value={nameDialogValue}
+                                onChange={(event) => setNameDialogValue(event.target.value)}
+                                placeholder={
+                                    nameDialog.kind === "folder"
+                                        ? "e.g. components"
+                                        : "e.g. App.tsx"
+                                }
+                            />
+                            <footer className="ide-name-dialog__actions">
+                                <button
+                                    type="button"
+                                    className="ide-name-dialog__cancel"
+                                    onClick={() => setNameDialog(null)}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    className="ide-name-dialog__submit"
+                                    disabled={!nameDialogValue.trim()}
+                                >
+                                    {nameDialog.kind === "rename" ? "Save name" : "Create"}
+                                </button>
+                            </footer>
+                        </form>
+                    </section>
+                </div>
+            )}
+
+            {pendingCloseTabIds && (
+                <div
+                    className="ide-name-overlay"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setPendingCloseTabIds(null);
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            setPendingCloseTabIds(null);
+                        }
+                    }}
+                >
+                    <section
+                        className="ide-name-dialog"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="ide-close-tabs-title"
+                        tabIndex={-1}
+                        autoFocus
+                    >
+                        <header className="ide-name-dialog__header">
+                            <span className="ide-name-dialog__icon ide-name-dialog__icon--danger">
+                                <X size={18} />
+                            </span>
+                            <div>
+                                <h2 id="ide-close-tabs-title">
+                                    Close tabs with unsaved changes?
+                                </h2>
+                                <p>
+                                    Your unsaved edits will be discarded. Save any changes you want to keep first.
+                                </p>
+                            </div>
+                        </header>
+                        <ul className="ide-close-tabs-list">
+                            {tabs
+                                .filter(
+                                    (tab) =>
+                                        pendingCloseTabIds.includes(tab.file.id) &&
+                                        tab.isDirty,
+                                )
+                                .map((tab) => (
+                                    <li key={tab.file.id}>{tab.file.name}</li>
+                                ))}
+                        </ul>
+                        <footer className="ide-name-dialog__actions">
+                            <button
+                                type="button"
+                                className="ide-name-dialog__cancel"
+                                onClick={() => setPendingCloseTabIds(null)}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="ide-name-dialog__submit ide-name-dialog__submit--danger"
+                                onClick={() => {
+                                    closeTabsImmediately(pendingCloseTabIds);
+                                    setPendingCloseTabIds(null);
+                                }}
+                            >
+                                Discard and close
+                            </button>
+                        </footer>
+                    </section>
+                </div>
+            )}
+
+            {tabContextMenu &&
+                createPortal(
+                    <div
+                        className="editor-tab-context-menu"
+                        data-editor-tab-menu
+                        role="menu"
+                        aria-label="Editor tab actions"
+                        style={{
+                            left: tabContextMenu.x,
+                            top: tabContextMenu.y,
+                        }}
+                    >
+                        <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => handleCloseTab(tabContextMenu.fileId)}
+                        >
+                            Close Tab
+                        </button>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            disabled={tabs.length < 2}
+                            onClick={() =>
+                                handleCloseTabs(
+                                    tabs
+                                        .filter((tab) => tab.file.id !== tabContextMenu.fileId)
+                                        .map((tab) => tab.file.id),
+                                )
+                            }
+                        >
+                            Close Others
+                        </button>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => handleCloseTabs(tabs.map((tab) => tab.file.id))}
+                        >
+                            Close All
+                        </button>
+                    </div>,
+                    document.body,
+                )}
+
+            {isShortcutHelpOpen && (
+                <div
+                    className="ide-name-overlay"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setIsShortcutHelpOpen(false);
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            setIsShortcutHelpOpen(false);
+                        }
+                    }}
+                >
+                    <section
+                        className="ide-name-dialog ide-shortcut-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="ide-shortcut-title"
+                        tabIndex={-1}
+                        autoFocus
+                    >
+                        <header className="ide-name-dialog__header">
+                            <span className="ide-name-dialog__icon">
+                                <Code2 size={18} />
+                            </span>
+                            <div>
+                                <h2 id="ide-shortcut-title">Keyboard shortcuts</h2>
+                                <p>Available while the editor is active.</p>
+                            </div>
+                            <button
+                                type="button"
+                                className="ide-name-dialog__close"
+                                onClick={() => setIsShortcutHelpOpen(false)}
+                                aria-label="Close keyboard shortcuts"
+                            >
+                                <X size={18} />
+                            </button>
+                        </header>
+                        <div className="ide-shortcut-list">
+                            {[
+                                ["Save active file", "Ctrl+S"],
+                                ["Undo", "Ctrl+Z"],
+                                ["Redo", "Ctrl+Y"],
+                                ["Find in active file", "Ctrl+F"],
+                                ["Select all", "Ctrl+A"],
+                            ].map(([label, shortcut]) => (
+                                <div className="ide-shortcut-row" key={label}>
+                                    <span>{label}</span>
+                                    <kbd>{shortcut}</kbd>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                </div>
+            )}
 
             {/* ================================= */}
             {/* Main IDE Area */}
@@ -1654,39 +2109,183 @@ export default function IDEPage() {
                     ref={workspaceRef}
                 >
 
+                    <IDEActivityBar
+                        activeView={activeSidebar}
+                        onSelect={handleActivitySelect}
+                    />
+
                     {/* ================================= */}
                     {/* LEFT: FILE EXPLORER */}
                     {/* ================================= */}
 
                     <aside
-                        className="ide-explorer"
+                        className={`ide-explorer${activeSidebar ? "" : " is-collapsed"}`}
                         style={{
-                            width: `${explorerWidth}px`,
-                            flexBasis: `${explorerWidth}px`,
+                            width: activeSidebar ? `${explorerWidth}px` : "0px",
+                            flexBasis: activeSidebar ? `${explorerWidth}px` : "0px",
+                            display: activeSidebar ? "block" : "none",
                         }}
                     >
 
-                        <FileExplorer
-                            key={refreshKey}
-                            projectId={
-                                numericProjectId
-                            }
-                            onFileSelect={
-                                openFile
-                            }
-                            onCreateFile={
-                                handleCreateFile
-                            }
-                            onCreateFolder={
-                                handleCreateFolder
-                            }
-                            onRename={
-                                handleRename
-                            }
-                            onDelete={
-                                handleDelete
-                            }
-                        />
+                        <div
+                            className="ide-sidebar-panel"
+                            style={{
+                                display: activeSidebar === "explorer" ? "block" : "none",
+                            }}
+                        >
+                            <FileExplorer
+                                projectId={numericProjectId}
+                                refreshKey={refreshKey}
+                                workspaceName={`Project #${projectId}`}
+                                activeFileId={activeTabId}
+                                onFileSelect={openFile}
+                                onCreateFile={handleCreateFile}
+                                onCreateFolder={handleCreateFolder}
+                                onRename={handleRename}
+                                onDelete={handleDelete}
+                            />
+                        </div>
+
+                        {activeSidebar === "search" && (
+                            <ProjectSearchPanel
+                                projectId={numericProjectId}
+                                onFileSelect={openFile}
+                            />
+                        )}
+
+                        {activeSidebar === "source-control" && (
+                            <section className="ide-tool-view" aria-label="Source control">
+                                <header className="ide-tool-view__header">
+                                    <h2>Source Control</h2>
+                                    <button
+                                        type="button"
+                                        title="Refresh Git status"
+                                        aria-label="Refresh Git status"
+                                        onClick={() => {
+                                            void getGitStatus(numericProjectId)
+                                                .then((status) => {
+                                                    setGitStatus(status);
+                                                    setGitError("");
+                                                })
+                                                .catch(() => {
+                                                    setGitError("Git status unavailable");
+                                                });
+                                        }}
+                                    >
+                                        Refresh
+                                    </button>
+                                </header>
+                                <div className="ide-tool-view__body">
+                                    <p className="ide-source-branch">
+                                        {gitStatus?.branch || gitError || "Loading Git status…"}
+                                    </p>
+                                    {gitStatus?.changed_files.length ? (
+                                        <>
+                                            <p className="ide-tool-view__message">
+                                                {gitStatus.changed_files.length} changed file
+                                                {gitStatus.changed_files.length === 1 ? "" : "s"}
+                                            </p>
+                                            {gitStatus.changed_files.map((file) => (
+                                                <div className="ide-source-file" key={file.path}>
+                                                    <code>{file.path}</code>
+                                                    <span>{file.status}</span>
+                                                </div>
+                                            ))}
+                                            <button
+                                                type="button"
+                                                className="ide-tool-view__action"
+                                                onClick={() => {
+                                                    setGitDiff("");
+                                                    void openGitDiff(false);
+                                                }}
+                                            >
+                                                View working tree diff
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <p className="ide-tool-view__message">
+                                            {gitStatus
+                                                ? "No local changes."
+                                                : "Git status is read-only in this IDE."}
+                                        </p>
+                                    )}
+                                </div>
+                            </section>
+                        )}
+
+                        {activeSidebar === "run-debug" && (
+                            <section className="ide-tool-view" aria-label="Run and debug">
+                                <header className="ide-tool-view__header">
+                                    <h2>Run and Debug</h2>
+                                </header>
+                                <div className="ide-tool-view__body">
+                                    <p className="ide-tool-view__message">
+                                        Run project commands in the integrated terminal. A debugger
+                                        is not configured for this workspace.
+                                    </p>
+                                </div>
+                            </section>
+                        )}
+
+                        {activeSidebar === "extensions" && (
+                            <section className="ide-tool-view" aria-label="Extensions">
+                                <header className="ide-tool-view__header">
+                                    <h2>Extensions</h2>
+                                </header>
+                                <div className="ide-tool-view__body">
+                                    <p className="ide-tool-view__message">
+                                        Extension management is not available in this web IDE.
+                                    </p>
+                                </div>
+                            </section>
+                        )}
+
+                        {activeSidebar === "accounts" && (
+                            <section className="ide-tool-view" aria-label="Accounts">
+                                <header className="ide-tool-view__header">
+                                    <h2>Account</h2>
+                                </header>
+                                <div className="ide-tool-view__body">
+                                    <p className="ide-tool-view__message">
+                                        Manage your signed-in IDE session.
+                                    </p>
+                                    <button
+                                        type="button"
+                                        className="ide-tool-view__action"
+                                        onClick={() => navigate("/projects")}
+                                    >
+                                        Back to projects
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="ide-tool-view__action"
+                                        onClick={handleLogout}
+                                    >
+                                        Sign out
+                                    </button>
+                                </div>
+                            </section>
+                        )}
+
+                        {activeSidebar === "settings" && (
+                            <section className="ide-tool-view" aria-label="Settings">
+                                <header className="ide-tool-view__header">
+                                    <h2>Settings</h2>
+                                </header>
+                                <div className="ide-tool-view__body">
+                                    <p className="ide-tool-view__message">
+                                        Restore the default editor, explorer, and terminal sizes.
+                                    </p>
+                                    <button
+                                        type="button"
+                                        className="ide-tool-view__action"
+                                        onClick={resetLayout}
+                                    >
+                                        Restore default layout
+                                    </button>
+                                </div>
+                            </section>
+                        )}
 
                     </aside>
 
@@ -1695,27 +2294,22 @@ export default function IDEPage() {
                     {/* RESIZER: EXPLORER / CENTER */}
                     {/* ================================= */}
 
-                    <div
-                        className={`ide-resizer ide-resizer-col ${activeResizer === "explorer"
-                            ? "is-active"
-                            : ""
-                            }`}
-                        onMouseDown={event => {
-                            event.preventDefault();
-                            setActiveResizer(
-                                "explorer"
-                            );
-                        }}
-                        onDoubleClick={() =>
-                            setExplorerWidth(240)
-                        }
-                        title="Drag to resize explorer (Double-click to reset)"
-                    >
-
-                        <div className="ide-resizer-handle" />
-
-                    </div>
-
+                    {activeSidebar && (
+                        <div
+                            className={`ide-resizer ide-resizer-col ${activeResizer === "explorer"
+                                ? "is-active"
+                                : ""
+                                }`}
+                            onMouseDown={event => {
+                                event.preventDefault();
+                                setActiveResizer("explorer");
+                            }}
+                            onDoubleClick={() => setExplorerWidth(240)}
+                            title="Drag to resize explorer (Double-click to reset)"
+                        >
+                            <div className="ide-resizer-handle" />
+                        </div>
+                    )}
 
                     {/* ================================= */}
                     {/* CENTER: EDITOR + TERMINAL */}
@@ -1760,6 +2354,27 @@ export default function IDEPage() {
                                                             tab.file.id
                                                         )
                                                     }
+                                                    onContextMenu={(event) => {
+                                                        event.preventDefault();
+                                                        setActiveTabId(tab.file.id);
+                                                        setTabContextMenu({
+                                                            fileId: tab.file.id,
+                                                            x: Math.max(
+                                                                8,
+                                                                Math.min(
+                                                                    event.clientX,
+                                                                    window.innerWidth - 196,
+                                                                ),
+                                                            ),
+                                                            y: Math.max(
+                                                                8,
+                                                                Math.min(
+                                                                    event.clientY,
+                                                                    window.innerHeight - 124,
+                                                                ),
+                                                            ),
+                                                        });
+                                                    }}
                                                 >
 
                                                     <div
@@ -1817,6 +2432,30 @@ export default function IDEPage() {
                                         )}
 
                                     </div>
+
+                                    {activeTab && (
+                                        <nav
+                                            className="editor-breadcrumbs"
+                                            aria-label="File breadcrumbs"
+                                        >
+                                            <div className="editor-breadcrumbs__path">
+                                                {(activeTab.file.path || activeTab.file.name)
+                                                    .split(/[\\/]/)
+                                                    .filter(Boolean)
+                                                    .map((segment, index) => (
+                                                        <span
+                                                            className="editor-breadcrumbs__segment"
+                                                            key={`${index}-${segment}`}
+                                                        >
+                                                            {segment}
+                                                        </span>
+                                                    ))}
+                                            </div>
+                                            <span className="editor-breadcrumbs__language">
+                                                {activeTab.language}
+                                            </span>
+                                        </nav>
+                                    )}
 
 
                                     {/* ========================= */}
@@ -1936,6 +2575,7 @@ export default function IDEPage() {
                                                 key={
                                                     activeTab.file.id
                                                 }
+                                                ref={editorRef}
                                                 value={
                                                     activeTab.content
                                                 }
@@ -2000,6 +2640,7 @@ export default function IDEPage() {
                         {/* ================================= */}
 
                         <div
+                            hidden={!isTerminalVisible}
                             className={`ide-resizer ide-resizer-row ${activeResizer === "terminal"
                                 ? "is-active"
                                 : ""
@@ -2030,10 +2671,12 @@ export default function IDEPage() {
                             style={{
                                 height: `${terminalHeight}px`,
                                 flexBasis: `${terminalHeight}px`,
+                                display: isTerminalVisible ? "flex" : "none",
                             }}
                         >
 
                             <Terminal
+                                ref={terminalRef}
                                 projectId={
                                     numericProjectId
                                 }
@@ -2050,26 +2693,22 @@ export default function IDEPage() {
                     {/* RESIZER: CENTER / AI PANEL */}
                     {/* ================================= */}
 
-                    <div
-                        className={`ide-resizer ide-resizer-col ${activeResizer === "ai"
-                            ? "is-active"
-                            : ""
-                            }`}
-                        onMouseDown={event => {
-                            event.preventDefault();
-                            setActiveResizer(
-                                "ai"
-                            );
-                        }}
-                        onDoubleClick={() =>
-                            setAiPanelWidth(360)
-                        }
-                        title="Drag to resize AI panel (Double-click to reset)"
-                    >
-
-                        <div className="ide-resizer-handle" />
-
-                    </div>
+                    {isChatVisible && (
+                        <div
+                            className={`ide-resizer ide-resizer-col ${activeResizer === "ai"
+                                ? "is-active"
+                                : ""
+                                }`}
+                            onMouseDown={event => {
+                                event.preventDefault();
+                                setActiveResizer("ai");
+                            }}
+                            onDoubleClick={() => setAiPanelWidth(360)}
+                            title="Drag to resize AI panel (Double-click to reset)"
+                        >
+                            <div className="ide-resizer-handle" />
+                        </div>
+                    )}
 
 
                     {/* ================================= */}
@@ -2081,6 +2720,7 @@ export default function IDEPage() {
                         style={{
                             width: `${aiPanelWidth}px`,
                             flexBasis: `${aiPanelWidth}px`,
+                            display: isChatVisible ? "flex" : "none",
                         }}
                     >
                         <AIChat
@@ -2156,6 +2796,27 @@ export default function IDEPage() {
                 </div>
 
             </div>
+
+            <footer className="ide-status-bar" aria-label="IDE status">
+                <button
+                    type="button"
+                    className="ide-status-bar__git"
+                    onClick={() => {
+                        setGitDiff("");
+                        void openGitDiff(false);
+                    }}
+                    title={gitError || "Open read-only Git status and diff"}
+                    aria-label={`Git ${gitStatus?.branch || gitError || "status loading"}; ${gitStatus?.changed_files.length ?? 0} changed files`}
+                >
+                    <GitBranch size={13} aria-hidden="true" />
+                    <span>{gitStatus?.branch || (gitError ? "Git unavailable" : "Loading Git status")}</span>
+                    {gitStatus && (
+                        <span className="ide-status-bar__changes">
+                            {gitStatus.changed_files.length}
+                        </span>
+                    )}
+                </button>
+            </footer>
 
         </div>
 

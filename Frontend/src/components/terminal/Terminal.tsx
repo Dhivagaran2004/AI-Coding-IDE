@@ -1,5 +1,8 @@
 import {
+    forwardRef,
     useState,
+    useImperativeHandle,
+    useRef,
     type KeyboardEvent,
 } from "react";
 
@@ -17,6 +20,10 @@ interface TerminalProps {
     projectId: number;
     onResultChange?: (result: TerminalAIContext | null) => void;
     onAskAI?: () => void;
+}
+
+export interface TerminalHandle {
+    focus: () => void;
 }
 
 
@@ -94,11 +101,11 @@ function getErrorMessage(
 // Terminal Component
 // =========================================
 
-export default function Terminal({
+const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal({
     projectId,
     onResultChange,
     onAskAI,
-}: TerminalProps) {
+}: TerminalProps, ref) {
 
     // =========================================
     // Command Input
@@ -109,6 +116,7 @@ export default function Terminal({
         setCommand,
     ] = useState("");
 
+    const commandInputRef = useRef<HTMLInputElement | null>(null);
 
     // =========================================
     // Terminal Output
@@ -503,6 +511,9 @@ export default function Terminal({
         setCommand("");
     }
 
+    useImperativeHandle(ref, () => ({
+        focus: () => commandInputRef.current?.focus(),
+    }), []);
 
     // =========================================
     // UI
@@ -585,6 +596,7 @@ export default function Terminal({
 
 
                 <input
+                    ref={commandInputRef}
                     type="text"
                     value={command}
                     onChange={event => {
@@ -613,4 +625,6 @@ export default function Terminal({
 
         </div>
     );
-}
+});
+
+export default Terminal;

@@ -2,7 +2,12 @@ import Editor from "@monaco-editor/react";
 
 import type { OnMount } from "@monaco-editor/react";
 
-import { useEffect, useRef } from "react";
+import {
+    forwardRef,
+    useEffect,
+    useImperativeHandle,
+    useRef,
+} from "react";
 
 
 
@@ -25,13 +30,18 @@ interface CodeEditorProps {
     ) => void;
 }
 
+export type CodeEditorAction = "undo" | "redo" | "selectAll" | "find";
 
-export default function CodeEditor({
+export interface CodeEditorHandle {
+    runAction: (action: CodeEditorAction) => void;
+}
+
+const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor({
     value,
     language,
     onChange,
     onSelectionChange,
-}: CodeEditorProps) {
+}: CodeEditorProps, ref) {
 
     const editorRef =
         useRef<Parameters<OnMount>[0] | null>(
@@ -45,6 +55,18 @@ export default function CodeEditor({
         selectionListenerRef.current?.dispose();
     }, []);
 
+    useImperativeHandle(ref, () => ({
+        runAction(action) {
+            const actionIds: Record<CodeEditorAction, string> = {
+                undo: "undo",
+                redo: "redo",
+                selectAll: "editor.action.selectAll",
+                find: "actions.find",
+            };
+            const editorAction = editorRef.current?.getAction(actionIds[action]);
+            void editorAction?.run();
+        },
+    }), []);
 
     function handleEditorMount(
         editor: Parameters<OnMount>[0]
@@ -129,4 +151,6 @@ export default function CodeEditor({
 
         </div>
     );
-}
+});
+
+export default CodeEditor;

@@ -89,6 +89,7 @@ class TerminalContext(BaseModel):
     stdout: str = Field(default="", max_length=50000)
     stderr: str = Field(default="", max_length=50000)
     success: bool
+    executed: bool = True
     timeout: bool = False
     created_files: list[str] = Field(default_factory=list)
     modified_files: list[str] = Field(default_factory=list)

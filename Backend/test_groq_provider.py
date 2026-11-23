@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -113,6 +114,85 @@ def test_groq_json_generation_enables_json_object_mode():
     )
     assert "no Markdown, code fences, or surrounding prose" in system_message
     assert "fenced JSON code actions" not in system_message
+
+
+def test_groq_agent_json_generation_supports_native_tool_calls():
+    provider = GroqProvider(model="test-model", api_key="test-groq-key")
+    provider.client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="list_files",
+                                    arguments='{"path":""}',
+                                )
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+    )
+    message = (
+        'Use {"type":"tool_call","name":"list_files","arguments":{}}. '
+        "Available tools: list_files"
+    )
+
+    response = asyncio.run(provider.generate_json(message))
+
+    assert json.loads(response) == {
+        "type": "tool_call",
+        "name": "list_files",
+        "arguments": {"path": ""},
+    }
+    parsed_call = TaskPlanner.parse_tool_call(response)
+    assert parsed_call is not None
+    assert parsed_call.name == "list_files"
+    assert parsed_call.arguments == {"path": ""}
+    request = provider.client.chat.completions.create.await_args.kwargs
+    assert request["tool_choice"] == "auto"
+    assert [tool["function"]["name"] for tool in request["tools"]] == [
+        "list_files",
+        "read_file",
+        "create_file",
+        "update_file",
+        "delete_file",
+        "execute_command",
+        "get_execution_result",
+    ]
+    assert "response_format" not in request
+
+
+def test_groq_agent_json_generation_returns_final_content_with_tools_enabled():
+    provider = GroqProvider(model="test-model", api_key="test-groq-key")
+    final_result = '{"status":"ready","actions":[]}'
+    provider.client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=final_result,
+                        tool_calls=None,
+                    )
+                )
+            ]
+        )
+    )
+
+    response = asyncio.run(
+        provider.generate_json(
+            'Return final JSON. Use {"type":"tool_call"}; Available tools: read_file'
+        )
+    )
+
+    assert response == final_result
+    request = provider.client.chat.completions.create.await_args.kwargs
+    assert request["tool_choice"] == "auto"
+    assert "response_format" not in request
 
 
 def test_groq_json_validation_error_falls_back_to_prompted_json():

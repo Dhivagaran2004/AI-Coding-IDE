@@ -101,6 +101,8 @@ class AIUsageService:
         output_tokens: int,
         request_status: str,
         error_status: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> None:
         record = (
             self.db.query(AIUsage)
@@ -115,4 +117,8 @@ class AIUsageService:
         record.reserved_tokens = 0
         record.request_status = request_status
         record.error_status = error_status
+        if provider is not None:
+            record.provider = provider
+        if model is not None:
+            record.model = model
         self.db.commit()

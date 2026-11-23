@@ -5,7 +5,9 @@ import {
     useMemo,
     useRef,
     useState,
+    type FormEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import axios from "axios";
 import { DiffEditor } from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
@@ -13,15 +15,21 @@ import remarkGfm from "remark-gfm";
 import {
     ChevronDown,
     Check,
+    MessageSquare,
     MoreVertical,
+    Pencil,
     Plus,
+    Trash2,
+    X,
 } from "lucide-react";
 import "./AIChat.css";
 import {
     approveAgentChanges,
     approveAgentValidation,
     cancelAgentTask,
+    clarifyAgentTask,
     clearAIConversation,
+    completeAgentPlanTask,
     continueAgentTask,
     createAIConversation,
     createAgentTask,
@@ -36,6 +44,8 @@ import {
     type AIConversationSummary,
     type AgentTask,
     type AIMessage,
+    type AgentAcceptanceCriterionResult,
+    type AgentPlanTask,
     type CodeAction,
 } from "../../services/aiService";
 import type { TerminalAIContext } from "../../services/terminalService";
@@ -96,6 +106,20 @@ type ChatMessage = {
     codeAction?: CodeAction;
 };
 
+type ConversationDialog =
+    | {
+        kind: "rename";
+        conversationId: number;
+    }
+    | {
+        kind: "clear";
+        conversationId: number;
+    }
+    | {
+        kind: "delete";
+        conversationId: number;
+    };
+
 type PreviewAction =
     | "general"
     | "fix"
@@ -155,6 +179,33 @@ type DiffStats = {
     removed: number;
     unchanged: number;
 };
+
+type AgentCriterionStatus = AgentAcceptanceCriterionResult["status"];
+
+function getAgentRequestError(error: unknown, fallback: string): string {
+    if (axios.isAxiosError(error)) {
+        return typeof error.response?.data?.detail === "string"
+            ? error.response.data.detail
+            : error.message;
+    }
+    return error instanceof Error ? error.message : fallback;
+}
+
+function getCriterionStateKey(
+    taskId: string,
+    planTaskId: string,
+    criterion: string,
+): string {
+    return JSON.stringify([taskId, planTaskId, criterion]);
+}
+
+function getPlanTaskStateKey(taskId: string, planTaskId: string): string {
+    return JSON.stringify([taskId, planTaskId]);
+}
+
+function formatStatus(status: string | null | undefined): string {
+    return status ? status.replaceAll("_", " ") : "not recorded";
+}
 
 /* =========================================================
    CODE BLOCK EXTRACTION
@@ -733,10 +784,20 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const [isUndoingAgentTask, setIsUndoingAgentTask] = useState(false);
     const [agentValidationError, setAgentValidationError] = useState<string | null>(null);
     const [isRunningAgentValidation, setIsRunningAgentValidation] = useState(false);
+    const [agentClarificationAnswer, setAgentClarificationAnswer] = useState("");
+    const [agentInteractionError, setAgentInteractionError] = useState<string | null>(null);
+    const [isSubmittingClarification, setIsSubmittingClarification] = useState(false);
+    const [isCompletingPlanTask, setIsCompletingPlanTask] = useState<string | null>(null);
+    const [verificationNotesByTask, setVerificationNotesByTask] = useState<Record<string, string>>({});
+    const [criterionStatuses, setCriterionStatuses] = useState<Record<string, AgentCriterionStatus>>({});
+    const [criterionEvidence, setCriterionEvidence] = useState<Record<string, string>>({});
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
     const generationAbortRef = useRef<AbortController | null>(null);
     const [conversations, setConversations] = useState<AIConversationSummary[]>([]);
     const [conversationId, setConversationId] = useState<number | null>(null);
+    const [conversationDialog, setConversationDialog] =
+        useState<ConversationDialog | null>(null);
+    const [conversationDialogValue, setConversationDialogValue] = useState("");
 
     const inputRef =
         useRef<HTMLTextAreaElement | null>(
@@ -1096,6 +1157,88 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         }
     };
 
+    const handleAgentClarification = async (
+        event: React.FormEvent<HTMLFormElement>,
+    ) => {
+        event.preventDefault();
+        if (!agentTask || !agentClarificationAnswer.trim() || isSubmittingClarification) {
+            return;
+        }
+
+        setAgentInteractionError(null);
+        setIsSubmittingClarification(true);
+        try {
+            const updated = await clarifyAgentTask(
+                agentTask.id,
+                agentClarificationAnswer.trim(),
+            );
+            setAgentTask(updated);
+            setAgentClarificationAnswer("");
+        } catch (error) {
+            setAgentInteractionError(
+                getAgentRequestError(error, "Unable to submit clarification."),
+            );
+        } finally {
+            setIsSubmittingClarification(false);
+        }
+    };
+
+    const handleCompletePlanTask = async (
+        event: React.FormEvent<HTMLFormElement>,
+        planTask: AgentPlanTask,
+    ) => {
+        event.preventDefault();
+        if (!agentTask || isCompletingPlanTask) {
+            return;
+        }
+
+        const verificationNotes = verificationNotesByTask[
+            getPlanTaskStateKey(agentTask.id, planTask.id)
+        ]?.trim() ?? "";
+        if (!verificationNotes) {
+            setAgentInteractionError("Add verification notes before submitting outcomes.");
+            return;
+        }
+
+        const acceptanceResults = planTask.acceptance_criteria.map((criterion) => {
+            const key = getCriterionStateKey(agentTask.id, planTask.id, criterion);
+            const savedResult = planTask.acceptance_results.find(
+                (result) => result.criterion === criterion,
+            );
+            const status = criterionStatuses[key] ?? savedResult?.status ?? "not_verified";
+            const evidence = criterionEvidence[key] ?? savedResult?.evidence ?? "";
+            return {
+                criterion,
+                status,
+                evidence: status === "not_verified" ? evidence.trim() || null : evidence.trim(),
+            };
+        });
+        if (acceptanceResults.some(
+            (result) => result.status !== "not_verified" && !result.evidence,
+        )) {
+            setAgentInteractionError("Add evidence for each met or not-met criterion.");
+            return;
+        }
+
+        setAgentInteractionError(null);
+        setIsCompletingPlanTask(planTask.id);
+        try {
+            const updated = await completeAgentPlanTask(
+                agentTask.id,
+                planTask.id,
+                verificationNotes,
+                acceptanceResults,
+            );
+            setAgentTask(updated);
+        } catch (error) {
+            setAgentInteractionError(
+                getAgentRequestError(error, "Unable to submit verification outcomes."),
+            );
+        } finally {
+            setIsCompletingPlanTask(null);
+        }
+    };
+
     const handleAgentApproval = async (
         approval: {
             action_indexes?: number[];
@@ -1417,6 +1560,11 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                         : null,
                 });
                 setAgentTask(task);
+                setAgentClarificationAnswer("");
+                setAgentInteractionError(null);
+                setVerificationNotesByTask({});
+                setCriterionStatuses({});
+                setCriterionEvidence({});
                 addMessage("assistant", "Agent task started. It will prepare a plan and proposed changes for review.");
                 return;
             }
@@ -1683,41 +1831,75 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         closePreview();
     };
 
-    const handleRenameConversation = async () => {
+    const openConversationDialog = (kind: ConversationDialog["kind"]) => {
         if (conversationId === null) {
             return;
         }
-        const current = conversations.find((item) => item.id === conversationId);
-        const title = window.prompt("Conversation name", current?.title ?? "");
-        if (!title?.trim()) {
+
+        if (kind === "rename") {
+            const current = conversations.find((item) => item.id === conversationId);
+            setConversationDialog({
+                kind,
+                conversationId,
+            });
+            setConversationDialogValue(current?.title ?? "");
             return;
         }
-        const updated = await renameAIConversation(conversationId, title.trim());
+
+        setConversationDialog({ kind, conversationId });
+        setConversationDialogValue("");
+    };
+
+    const handleRenameConversation = async (targetId: number, title: string) => {
+        if (!title.trim()) {
+            return;
+        }
+        const updated = await renameAIConversation(targetId, title.trim());
         setConversations((previous) =>
             previous.map((item) => item.id === updated.id ? updated : item),
         );
     };
 
-    const handleClearConversation = async () => {
-        if (conversationId === null || !window.confirm("Clear all messages in this conversation?")) {
-            return;
+    const handleClearConversation = async (targetId: number) => {
+        await clearAIConversation(targetId);
+        if (conversationId === targetId) {
+            setMessages([]);
+            closePreview();
         }
-        await clearAIConversation(conversationId);
-        setMessages([]);
-        closePreview();
     };
 
-    const handleDeleteConversation = async () => {
-        if (conversationId === null || !window.confirm("Delete this conversation permanently?")) {
+    const handleDeleteConversation = async (targetId: number) => {
+        await deleteAIConversation(targetId);
+        setConversations((previous) =>
+            previous.filter((item) => item.id !== targetId),
+        );
+        if (conversationId === targetId) {
+            setConversationId(null);
+            setMessages([]);
+            closePreview();
+        }
+    };
+
+    const handleConversationDialogSubmit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const dialog = conversationDialog;
+        if (!dialog) {
             return;
         }
-        await deleteAIConversation(conversationId);
-        setConversations((previous) =>
-            previous.filter((item) => item.id !== conversationId),
-        );
-        setConversationId(null);
-        setMessages([]);
-        closePreview();
+
+        const title = conversationDialogValue.trim();
+        if (dialog.kind === "rename" && !title) {
+            return;
+        }
+
+        setConversationDialog(null);
+        if (dialog.kind === "rename") {
+            void handleRenameConversation(dialog.conversationId, title);
+        } else if (dialog.kind === "clear") {
+            void handleClearConversation(dialog.conversationId);
+        } else {
+            void handleDeleteConversation(dialog.conversationId);
+        }
     };
 
     /* =====================================================
@@ -1726,6 +1908,116 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
 
     return (
         <section className="ai-chat">
+            {conversationDialog && createPortal(
+                <div
+                    className="ide-name-overlay"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setConversationDialog(null);
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            setConversationDialog(null);
+                        }
+                    }}
+                >
+                    <section
+                        className="ide-name-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="ai-chat-dialog-title"
+                        tabIndex={-1}
+                        autoFocus
+                    >
+                        <header className="ide-name-dialog__header">
+                            <span
+                                className={`ide-name-dialog__icon${conversationDialog.kind === "delete"
+                                    ? " ide-name-dialog__icon--danger"
+                                    : ""
+                                    }`}
+                            >
+                                {conversationDialog.kind === "rename" ? (
+                                    <Pencil size={18} />
+                                ) : conversationDialog.kind === "clear" ? (
+                                    <MessageSquare size={18} />
+                                ) : (
+                                    <Trash2 size={18} />
+                                )}
+                            </span>
+                            <div>
+                                <h2 id="ai-chat-dialog-title">
+                                    {conversationDialog.kind === "rename"
+                                        ? "Rename conversation"
+                                        : conversationDialog.kind === "clear"
+                                            ? "Clear conversation"
+                                            : "Delete conversation"}
+                                </h2>
+                                <p>
+                                    {conversationDialog.kind === "rename"
+                                        ? "Choose a name that helps you find this chat later."
+                                        : conversationDialog.kind === "clear"
+                                            ? "All messages will be removed. The conversation will stay in your list."
+                                            : "This conversation and its messages will be permanently deleted."}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                className="ide-name-dialog__close"
+                                onClick={() => setConversationDialog(null)}
+                                aria-label="Close dialog"
+                            >
+                                <X size={18} />
+                            </button>
+                        </header>
+                        <form onSubmit={handleConversationDialogSubmit}>
+                            {conversationDialog.kind === "rename" && (
+                                <>
+                                    <label htmlFor="ai-chat-dialog-title-input">
+                                        Conversation name
+                                    </label>
+                                    <input
+                                        id="ai-chat-dialog-title-input"
+                                        autoFocus
+                                        value={conversationDialogValue}
+                                        onChange={(event) => setConversationDialogValue(event.target.value)}
+                                        maxLength={120}
+                                        placeholder="Enter a conversation name"
+                                    />
+                                </>
+                            )}
+                            <footer className="ide-name-dialog__actions">
+                                <button
+                                    type="button"
+                                    className="ide-name-dialog__cancel"
+                                    onClick={() => setConversationDialog(null)}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    className={`ide-name-dialog__submit${conversationDialog.kind === "delete"
+                                        ? " ide-name-dialog__submit--danger"
+                                        : ""
+                                        }`}
+                                    disabled={
+                                        conversationDialog.kind === "rename" &&
+                                        !conversationDialogValue.trim()
+                                    }
+                                >
+                                    {conversationDialog.kind === "rename"
+                                        ? "Save name"
+                                        : conversationDialog.kind === "clear"
+                                            ? "Clear messages"
+                                            : "Delete conversation"}
+                                </button>
+                            </footer>
+                        </form>
+                    </section>
+                </div>,
+                document.body,
+            )}
             {/* =================================================
                 HEADER
                 ================================================= */}
@@ -1787,7 +2079,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                         className="ai-chat__options-item"
                                         onClick={() => {
                                             setIsConversationMenuOpen(false);
-                                            void handleRenameConversation();
+                                            openConversationDialog("rename");
                                         }}
                                         disabled={conversationId === null || isLoading}
                                     >
@@ -1798,7 +2090,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                         className="ai-chat__options-item"
                                         onClick={() => {
                                             setIsConversationMenuOpen(false);
-                                            void handleClearConversation();
+                                            openConversationDialog("clear");
                                         }}
                                         disabled={conversationId === null || isLoading}
                                     >
@@ -1809,7 +2101,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                         className="ai-chat__options-item ai-chat__options-item--danger"
                                         onClick={() => {
                                             setIsConversationMenuOpen(false);
-                                            void handleDeleteConversation();
+                                            openConversationDialog("delete");
                                         }}
                                         disabled={conversationId === null || isLoading}
                                     >
@@ -1987,6 +2279,9 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                             <span className={`ai-chat__agent-status is-${agentTask.status}`}>
                                 {agentTask.status.replaceAll("_", " ")}
                             </span>
+                            <span className={`ai-chat__verification-status is-${agentTask.verification_status ?? "not_recorded"}`}>
+                                Verification: {formatStatus(agentTask.verification_status)}
+                            </span>
                         </div>
                         {!( ["completed", "failed", "cancelled"].includes(agentTask.status)) && (
                             <button
@@ -2026,6 +2321,237 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                         <ol className="ai-chat__agent-plan">
                             {agentTask.plan.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
                         </ol>
+                    )}
+                    {agentTask.status === "awaiting_clarification" && agentTask.clarification_questions.length > 0 && (
+                        <section className="ai-chat__agent-interaction">
+                            <h4>Clarification needed</h4>
+                            <ul>
+                                {agentTask.clarification_questions.map((question, index) => (
+                                    <li key={`${index}-${question}`}>{question}</li>
+                                ))}
+                            </ul>
+                            <form onSubmit={(event) => void handleAgentClarification(event)}>
+                                <label htmlFor="agent-clarification-answer">Your answer</label>
+                                <textarea
+                                    id="agent-clarification-answer"
+                                    required
+                                    rows={3}
+                                    value={agentClarificationAnswer}
+                                    onChange={(event) => setAgentClarificationAnswer(event.target.value)}
+                                    placeholder="Answer the questions above"
+                                />
+                                <button
+                                    type="submit"
+                                    className="is-primary"
+                                    disabled={isSubmittingClarification || !agentClarificationAnswer.trim()}
+                                >
+                                    {isSubmittingClarification ? "Submitting..." : "Submit clarification"}
+                                </button>
+                            </form>
+                        </section>
+                    )}
+                    {agentTask.plan_details && (
+                        <details className="ai-chat__structured-plan">
+                            <summary>
+                                Structured plan: {agentTask.plan_details.objective}
+                            </summary>
+                            <div className="ai-chat__structured-plan-content">
+                                <p><strong>Project:</strong> {agentTask.plan_details.project_type}</p>
+                                <p><strong>Scope:</strong> {agentTask.plan_details.scope}</p>
+                                <p>{agentTask.plan_details.project_understanding}</p>
+                                {agentTask.plan_details.assumptions.length > 0 && (
+                                    <div>
+                                        <strong>Assumptions</strong>
+                                        <ul>{agentTask.plan_details.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
+                                    </div>
+                                )}
+                                {agentTask.plan_details.requirements.length > 0 && (
+                                    <div>
+                                        <strong>Requirements</strong>
+                                        <ul className="ai-chat__plan-requirements">
+                                            {agentTask.plan_details.requirements.map((requirement) => (
+                                                <li key={requirement.id}>
+                                                    <span>{requirement.category}</span>
+                                                    <strong>{requirement.id}</strong>
+                                                    {requirement.description}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                                <div className="ai-chat__plan-tasks">
+                                    <strong>Plan tasks</strong>
+                                    {agentTask.plan_details.tasks.map((planTask) => {
+                                        const notesKey = getPlanTaskStateKey(agentTask.id, planTask.id);
+                                        const dependenciesComplete = planTask.dependencies.every(
+                                            (dependency) => agentTask.plan_details?.tasks.find(
+                                                (candidate) => candidate.id === dependency,
+                                            )?.status === "completed",
+                                        );
+                                        const canVerifyPlanTask =
+                                            agentTask.status === "awaiting_validation" &&
+                                            ["applied", "in_progress"].includes(planTask.status) &&
+                                            dependenciesComplete;
+
+                                        return (
+                                            <article className="ai-chat__plan-task" key={planTask.id}>
+                                                <div className="ai-chat__plan-task-heading">
+                                                    <strong>{planTask.id}: {planTask.description}</strong>
+                                                    <span className={`is-${planTask.status}`}>
+                                                        {planTask.status.replaceAll("_", " ")}
+                                                    </span>
+                                                    <span className={`is-${planTask.verification_status}`}>
+                                                        {planTask.verification_status.replaceAll("_", " ")}
+                                                    </span>
+                                                </div>
+                                                <p>{planTask.objective}</p>
+                                                <div className="ai-chat__plan-task-meta">
+                                                    <span>Type: {planTask.task_type}</span>
+                                                    {planTask.dependencies.length > 0 && (
+                                                        <span>Depends on: {planTask.dependencies.join(", ")}</span>
+                                                    )}
+                                                    {planTask.expected_files.length > 0 && (
+                                                        <span>Files: {planTask.expected_files.join(", ")}</span>
+                                                    )}
+                                                    {planTask.requirement_ids.length > 0 && (
+                                                        <span>Requirements: {planTask.requirement_ids.join(", ")}</span>
+                                                    )}
+                                                </div>
+                                                <div className="ai-chat__plan-task-criteria">
+                                                    <strong>Acceptance criteria</strong>
+                                                    <ul>
+                                                        {planTask.acceptance_criteria.map((criterion) => {
+                                                            const result = planTask.acceptance_results.find(
+                                                                (item) => item.criterion === criterion,
+                                                            );
+                                                            return (
+                                                                <li key={criterion}>
+                                                                    <span>{criterion}</span>
+                                                                    {result && (
+                                                                        <div className={`ai-chat__criterion-result is-${result.status}`}>
+                                                                            <strong>{result.status.replaceAll("_", " ")}</strong>
+                                                                            {result.evidence && <p>{result.evidence}</p>}
+                                                                        </div>
+                                                                    )}
+                                                                </li>
+                                                            );
+                                                        })}
+                                                    </ul>
+                                                </div>
+                                                {planTask.verification_steps.length > 0 && (
+                                                    <details className="ai-chat__plan-task-verification">
+                                                        <summary>Verification steps</summary>
+                                                        <ul>{planTask.verification_steps.map((step) => <li key={step}>{step}</li>)}</ul>
+                                                    </details>
+                                                )}
+                                                {canVerifyPlanTask && (
+                                                    <form
+                                                        className="ai-chat__verification-form"
+                                                        onSubmit={(event) => void handleCompletePlanTask(event, planTask)}
+                                                    >
+                                                        <strong>Record your verification</strong>
+                                                        {planTask.acceptance_criteria.map((criterion) => {
+                                                            const key = getCriterionStateKey(agentTask.id, planTask.id, criterion);
+                                                            const savedResult = planTask.acceptance_results.find(
+                                                                (result) => result.criterion === criterion,
+                                                            );
+                                                            const status = criterionStatuses[key] ?? savedResult?.status ?? "not_verified";
+                                                            const evidence = criterionEvidence[key] ?? savedResult?.evidence ?? "";
+                                                            const statusId = `${planTask.id}-${planTask.acceptance_criteria.indexOf(criterion)}-status`;
+                                                            const evidenceId = `${planTask.id}-${planTask.acceptance_criteria.indexOf(criterion)}-evidence`;
+                                                            return (
+                                                                <div className="ai-chat__verification-criterion" key={criterion}>
+                                                                    <label htmlFor={statusId}>{criterion}</label>
+                                                                    <select
+                                                                        id={statusId}
+                                                                        value={status}
+                                                                        disabled={isCompletingPlanTask !== null}
+                                                                        onChange={(event) => setCriterionStatuses((current) => ({
+                                                                            ...current,
+                                                                            [key]: event.target.value as AgentCriterionStatus,
+                                                                        }))}
+                                                                    >
+                                                                        <option value="met">Met</option>
+                                                                        <option value="not_met">Not met</option>
+                                                                        <option value="not_verified">Not verified</option>
+                                                                    </select>
+                                                                    {status !== "not_verified" && (
+                                                                        <>
+                                                                            <label htmlFor={evidenceId}>Evidence</label>
+                                                                            <input
+                                                                                id={evidenceId}
+                                                                                required
+                                                                                value={evidence}
+                                                                                disabled={isCompletingPlanTask !== null}
+                                                                                onChange={(event) => setCriterionEvidence((current) => ({
+                                                                                    ...current,
+                                                                                    [key]: event.target.value,
+                                                                                }))}
+                                                                                placeholder="Describe what you checked"
+                                                                            />
+                                                                        </>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                        <label htmlFor={`${planTask.id}-verification-notes`}>Verification notes</label>
+                                                        <textarea
+                                                            id={`${planTask.id}-verification-notes`}
+                                                            required
+                                                            rows={2}
+                                                            value={verificationNotesByTask[notesKey] ?? ""}
+                                                            disabled={isCompletingPlanTask !== null}
+                                                            onChange={(event) => setVerificationNotesByTask((current) => ({
+                                                                ...current,
+                                                                [notesKey]: event.target.value,
+                                                            }))}
+                                                            placeholder="Summarize how you verified this task"
+                                                        />
+                                                        <button
+                                                            type="submit"
+                                                            className="is-primary"
+                                                            disabled={isCompletingPlanTask !== null || !verificationNotesByTask[notesKey]?.trim()}
+                                                        >
+                                                            {isCompletingPlanTask === planTask.id ? "Saving..." : "Submit outcomes"}
+                                                        </button>
+                                                    </form>
+                                                )}
+                                            </article>
+                                        );
+                                    })}
+                                </div>
+                                {agentTask.plan_details.validation_strategy.length > 0 && (
+                                    <div className="ai-chat__plan-validation-strategy">
+                                        <strong>Validation strategy</strong>
+                                        <ul>{agentTask.plan_details.validation_strategy.map((step) => <li key={step}>{step}</li>)}</ul>
+                                    </div>
+                                )}
+                                {agentTask.plan_details.risks.length > 0 && (
+                                    <div>
+                                        <strong>Risks</strong>
+                                        <ul>{agentTask.plan_details.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>
+                                    </div>
+                                )}
+                            </div>
+                        </details>
+                    )}
+                    {agentTask.task_history.length > 0 && (
+                        <details className="ai-chat__agent-history">
+                            <summary>Task history ({agentTask.task_history.length})</summary>
+                            <ol>
+                                {agentTask.task_history.map((item, index) => (
+                                    <li key={`${item.plan_id}-${item.iteration}-${item.plan_task_id}-${index}`}>
+                                        <strong>{item.plan_task_id}</strong>
+                                        <span>{item.status.replaceAll("_", " ")}</span>
+                                        <p>{item.description}</p>
+                                        {item.verification_notes && <p>{item.verification_notes}</p>}
+                                    </li>
+                                ))}
+                            </ol>
+                        </details>
+                    )}
+                    {agentInteractionError && (
+                        <p className="ai-chat__agent-error" role="alert">{agentInteractionError}</p>
                     )}
                     {agentTask.status === "completed" && agentTask.actions.length === 0 && !agentTask.validation_command && (
                         <p className="ai-chat__agent-empty">
@@ -2166,9 +2692,33 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                     )}
                     {agentTask.validation_result && (
                         <div className={`ai-chat__agent-result${agentTask.validation_result.success ? " is-pass" : " is-fail"}`}>
-                            <strong>{agentTask.validation_result.success ? "Validation passed" : `Validation failed (exit ${agentTask.validation_result.exit_code})`}</strong>
-                            {(agentTask.validation_result.stderr || agentTask.validation_result.stdout) && (
-                                <pre>{(agentTask.validation_result.stderr || agentTask.validation_result.stdout).slice(0, 3000)}</pre>
+                            <strong>
+                                {"kind" in agentTask.validation_result
+                                    ? "Acceptance criteria not met"
+                                    : agentTask.validation_result.executed === false
+                                        ? "Validation not run"
+                                        : agentTask.validation_result.success
+                                            ? "Validation passed"
+                                            : `Validation failed (exit ${agentTask.validation_result.exit_code})`}
+                            </strong>
+                            {"kind" in agentTask.validation_result ? (
+                                <ul>
+                                    {agentTask.validation_result.acceptance_results.map((result) => (
+                                        <li key={result.criterion}>
+                                            <strong>{result.criterion}: {result.status.replaceAll("_", " ")}</strong>
+                                            {result.evidence && <p>{result.evidence}</p>}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <>
+                                    {agentTask.validation_result.executed === false && (
+                                        <p>The approved command was not executed because Docker is unavailable.</p>
+                                    )}
+                                    {(agentTask.validation_result.stderr || agentTask.validation_result.stdout) && (
+                                        <pre>{(agentTask.validation_result.stderr || agentTask.validation_result.stdout).slice(0, 3000)}</pre>
+                                    )}
+                                </>
                             )}
                         </div>
                     )}

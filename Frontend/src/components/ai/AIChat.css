@@ -1054,6 +1054,211 @@
     padding: 8px 0 0;
 }
 
+.ai-chat__verification-status {
+    border-color: #3c3c3c;
+    background: #222222;
+    color: #aeb2b8;
+}
+
+.ai-chat__verification-status.is-verified {
+    border-color: #285539;
+    background: #172a1d;
+    color: #89d185;
+}
+
+.ai-chat__verification-status.is-not_verified,
+.ai-chat__verification-status.is-pending {
+    border-color: #66521f;
+    background: #332a16;
+    color: #e8c56b;
+}
+
+.ai-chat__verification-status.is-failed {
+    border-color: #713636;
+    background: #351d1d;
+    color: #f28b82;
+}
+
+.ai-chat__agent-interaction,
+.ai-chat__structured-plan,
+.ai-chat__agent-history {
+    margin: 8px 0;
+    padding: 9px 10px;
+    border: 1px solid #34363a;
+    border-radius: 5px;
+    background: #1b1b1b;
+}
+
+.ai-chat__agent-interaction h4 {
+    margin: 0 0 6px;
+    color: #e1e1e1;
+    font-size: 12px;
+}
+
+.ai-chat__agent-interaction ul,
+.ai-chat__structured-plan-content ul {
+    margin: 4px 0 8px;
+    padding-left: 20px;
+}
+
+.ai-chat__agent-interaction li,
+.ai-chat__structured-plan-content li {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+}
+
+.ai-chat__agent-interaction form,
+.ai-chat__verification-form {
+    display: grid;
+    gap: 7px;
+    margin-top: 8px;
+}
+
+.ai-chat__agent-interaction label,
+.ai-chat__verification-form > label,
+.ai-chat__verification-criterion > label {
+    color: #c5c8cc;
+    font-size: 11px;
+}
+
+.ai-chat__agent-interaction textarea,
+.ai-chat__verification-form textarea,
+.ai-chat__verification-form input,
+.ai-chat__verification-criterion select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 8px;
+    border: 1px solid #45484d;
+    border-radius: 4px;
+    background: #202020;
+    color: #e1e1e1;
+    font: inherit;
+}
+
+.ai-chat__agent-interaction textarea,
+.ai-chat__verification-form textarea {
+    resize: vertical;
+}
+
+.ai-chat__structured-plan > summary,
+.ai-chat__agent-history > summary,
+.ai-chat__plan-task-verification > summary {
+    color: #b8d7f2;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.ai-chat__structured-plan-content {
+    display: grid;
+    gap: 8px;
+    padding-top: 8px;
+}
+
+.ai-chat__structured-plan-content p {
+    margin: 0;
+    line-height: 1.45;
+}
+
+.ai-chat__plan-requirements,
+.ai-chat__plan-tasks > strong,
+.ai-chat__plan-validation-strategy > strong {
+    display: block;
+}
+
+.ai-chat__plan-requirements li {
+    display: grid;
+    grid-template-columns: max-content max-content 1fr;
+    gap: 6px;
+    align-items: baseline;
+}
+
+.ai-chat__plan-requirements li > span,
+.ai-chat__plan-task-meta,
+.ai-chat__plan-task-heading span {
+    color: #92979e;
+    font-size: 10px;
+}
+
+.ai-chat__plan-tasks {
+    display: grid;
+    gap: 7px;
+}
+
+.ai-chat__plan-task {
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid #34363a;
+    border-radius: 4px;
+    background: #202020;
+}
+
+.ai-chat__plan-task-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 5px;
+}
+
+.ai-chat__plan-task-heading strong {
+    flex: 1 1 180px;
+}
+
+.ai-chat__plan-task-meta {
+    display: grid;
+    gap: 3px;
+    overflow-wrap: anywhere;
+}
+
+.ai-chat__plan-task-criteria ul {
+    margin-bottom: 0;
+}
+
+.ai-chat__criterion-result {
+    margin: 3px 0 5px;
+    color: #c5c8cc;
+}
+
+.ai-chat__criterion-result.is-met {
+    color: #89d185;
+}
+
+.ai-chat__criterion-result.is-not_met {
+    color: #f28b82;
+}
+
+.ai-chat__criterion-result.is-not_verified {
+    color: #e8c56b;
+}
+
+.ai-chat__criterion-result p {
+    margin-top: 2px;
+    color: #aeb2b8;
+}
+
+.ai-chat__verification-form {
+    padding-top: 7px;
+    border-top: 1px solid #34363a;
+}
+
+.ai-chat__verification-criterion {
+    display: grid;
+    gap: 5px;
+    padding: 6px 0;
+    border-bottom: 1px solid #2d2d2d;
+}
+
+.ai-chat__agent-history ol {
+    display: grid;
+    gap: 7px;
+    padding-left: 20px;
+}
+
+.ai-chat__agent-history li p,
+.ai-chat__agent-result li p {
+    margin: 3px 0;
+}
+
 .ai-chat__messages > .ai-chat__message-row,
 .ai-chat__messages > .ai-chat__agent-panel {
     width: 100%;

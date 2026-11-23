@@ -25,8 +25,9 @@ from App.service.AI.agent.agent_task_service import (
     TaskPlanner,
     validate_agent_command,
 )
+from App.service.AI.agent import agent_tools as agent_tools_module
 from App.service.AI.agent.agent_tools import AgentToolError, AgentTools
-from App.service.AI.code_action_service import CodeActionService
+from App.service.AI.code_action_service import CodeActionService, PatchNotFoundError
 
 
 @pytest.fixture
@@ -99,6 +100,72 @@ def action_payload() -> dict[str, object]:
     }
 
 
+def adapt_legacy_test_plan(response: str) -> str:
+    try:
+        payload = json.loads(response)
+    except (ValueError, TypeError):
+        return response
+    if not isinstance(payload, dict) or not isinstance(payload.get("plan"), list):
+        return response
+
+    plan_items = [
+        item.strip()
+        for item in payload["plan"]
+        if isinstance(item, str) and item.strip()
+    ] or ["Review the requested project task"]
+    actions = payload.get("actions", [])
+    action_paths = [
+        item["file_path"]
+        for item in actions
+        if isinstance(item, dict) and isinstance(item.get("file_path"), str)
+    ] if isinstance(actions, list) else []
+    task_type = "implementation" if action_paths else "analysis"
+    requirement_category = "functional" if action_paths else "analysis"
+    tasks = []
+    for index, description in enumerate(plan_items):
+        current_type = task_type if index == 0 else (
+            "verification" if action_paths else "analysis"
+        )
+        tasks.append({
+            "id": f"step-{index + 1}",
+            "task_type": current_type,
+            "description": description,
+            "objective": description,
+            "dependencies": [f"step-{index}"] if index else [],
+            "requirement_ids": ["req-1"],
+            "expected_files": action_paths if index == 0 and action_paths else [],
+            "required_tools": [],
+            "acceptance_criteria": [description],
+            "verification_steps": [
+                payload.get("validation_command") or "Review the result against the request."
+            ],
+            "status": "pending",
+        })
+    payload["plan"] = {
+        "plan_id": "test-plan",
+        "objective": plan_items[0],
+        "project_type": "existing project",
+        "scope": plan_items[0],
+        "project_understanding": "The project context is represented by the test fixture.",
+        "assumptions": [],
+        "requirements": [{
+            "id": "req-1",
+            "description": plan_items[0],
+            "category": requirement_category,
+        }],
+        "acceptance_criteria": [plan_items[0]],
+        "technical_approach": "Use the existing project structure.",
+        "tasks": tasks,
+        "risks": [],
+        "validation_strategy": [
+            payload.get("validation_command") or "Review the result against the request."
+        ],
+    }
+    payload["status"] = "ready"
+    payload["clarification_questions"] = []
+    return json.dumps(payload)
+
+
 class FakeAIService:
     def __init__(self, response: str):
         self.responses = response if isinstance(response, list) else [response]
@@ -111,8 +178,10 @@ class FakeAIService:
         self.messages.append(message)
         self.contexts.append(context)
         if len(self.responses) > 1:
-            return self.responses.pop(0)
-        return self.responses[0]
+            response = self.responses.pop(0)
+        else:
+            response = self.responses[0]
+        return adapt_legacy_test_plan(response)
 
     async def chat_json(self, message, context=None, history=None):
         return await self.chat(message, context=context, history=history)
@@ -173,6 +242,82 @@ def make_plan_response(command=None):
     return json.dumps(plan)
 
 
+def make_structured_plan_response(command=None, actions=None):
+    return adapt_legacy_test_plan(json.dumps({
+        "plan": ["Implement the requested behavior", "Verify the result"],
+        "actions": [action_payload()] if actions is None else actions,
+        "validation_command": command,
+    }))
+
+
+def make_dependency_plan_response(command=None):
+    payload = json.loads(make_structured_plan_response(command))
+    template = payload["plan"]["tasks"][0]
+    payload["actions"] = [
+        action_payload(),
+        {
+            "type": "code_change",
+            "operation": "create_file",
+            "file_path": "helper.py",
+            "description": "Create a helper module",
+            "new_code": "def helper():\n    return True\n",
+        },
+    ]
+    payload["plan"]["tasks"] = [
+        {
+            **template,
+            "id": "step-1",
+            "description": "Update the entry point",
+            "objective": "Update the entry point",
+            "expected_files": ["main.py"],
+        },
+        {
+            **template,
+            "id": "step-2",
+            "description": "Create the supporting helper",
+            "objective": "Create the supporting helper",
+            "dependencies": ["step-1"],
+            "expected_files": ["helper.py"],
+        },
+        {
+            **template,
+            "id": "step-3",
+            "task_type": "verification",
+            "description": "Verify the application",
+            "objective": "Verify the application",
+            "dependencies": ["step-2"],
+            "expected_files": [],
+        },
+    ]
+    return json.dumps(payload)
+
+
+def acceptance_results_for(
+    task: dict[str, object],
+    plan_task_id: str,
+    evidence: str,
+    status: str = "met",
+) -> list[dict[str, object]]:
+    plan_details = task["plan_details"]
+    assert isinstance(plan_details, dict)
+    tasks = plan_details["tasks"]
+    assert isinstance(tasks, list)
+    plan_task = next(
+        row for row in tasks
+        if isinstance(row, dict) and row.get("id") == plan_task_id
+    )
+    criteria = plan_task["acceptance_criteria"]
+    assert isinstance(criteria, list)
+    return [
+        {
+            "criterion": str(criterion),
+            "status": status,
+            "evidence": evidence if status != "not_verified" else None,
+        }
+        for criterion in criteria
+    ]
+
+
 def test_task_planner_validates_structured_multi_file_actions():
     payload = {"plan": ["Review both files"], "actions": [action_payload(), {
         **action_payload(),
@@ -216,8 +361,190 @@ def test_task_planner_accepts_project_local_python_validation_command():
     assert command == "python app.py"
 
 
+def test_structured_planner_checks_plan_action_file_coverage():
+    response = make_structured_plan_response()
+    result = TaskPlanner.parse_planning_result(response)
+
+    assert result.status == "ready"
+    assert result.plan is not None
+    assert result.plan.requirements[0].category == "functional"
+    assert result.plan.tasks[0].expected_files == ["main.py"]
+    assert result.actions[0].file_path == "main.py"
+
+    payload = json.loads(response)
+    payload["plan"]["tasks"][0]["expected_files"] = ["main.py", "missing.py"]
+    with pytest.raises(ValueError, match="missing actions for expected files"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+
+def test_structured_planner_normalizes_singleton_text_lists_and_missing_plan_id():
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"].pop("plan_id")
+    payload["plan"]["validation_strategy"] = "Run the backend tests."
+    payload["plan"]["tasks"][0]["acceptance_criteria"] = (
+        "Employee records can be created."
+    )
+
+    result = TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    assert result.plan is not None
+    assert result.plan.plan_id.startswith("plan-")
+    assert result.plan.validation_strategy == ["Run the backend tests."]
+    assert result.plan.tasks[0].acceptance_criteria == [
+        "Employee records can be created."
+    ]
+
+
+def test_structured_planner_accepts_verification_requirements_and_structured_risks():
+    payload = json.loads(make_structured_plan_response())
+    payload.pop("validation_command")
+    payload["plan"]["requirements"].append({
+        "id": "req-quality",
+        "description": "Exercise the API with automated tests.",
+        "category": "quality",
+    })
+    payload["plan"]["tasks"][1]["requirement_ids"].append("req-quality")
+    payload["plan"]["risks"] = [{
+        "risk": "Database schema changes may break existing data.",
+        "mitigation": "Use isolated test databases.",
+    }]
+
+    result = TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    assert result.validation_command is None
+    assert result.plan is not None
+    assert result.plan.risks == [
+        "Database schema changes may break existing data. "
+        "(mitigation: Use isolated test databases.)"
+    ]
+
+
+def test_structured_planner_accepts_more_than_ten_actions_with_file_ownership():
+    payload = json.loads(make_structured_plan_response())
+    paths = [f"module_{index}.py" for index in range(11)]
+    actions = []
+    for path in paths:
+        action = action_payload()
+        action["file_path"] = path
+        actions.append(action)
+
+    first_task = payload["plan"]["tasks"][0]
+    first_task["expected_files"] = paths[:6]
+    second_task = {
+        **first_task,
+        "id": "step-3",
+        "description": "Create supporting modules",
+        "objective": "Create supporting modules",
+        "dependencies": ["step-1"],
+        "expected_files": paths[6:],
+    }
+    payload["plan"]["tasks"].append(second_task)
+    payload["actions"] = actions
+
+    result = TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    assert len(result.actions) == 11
+    assert {
+        path
+        for task in result.plan.tasks
+        for path in task.expected_files
+    } == set(paths)
+
+
+def test_structured_planner_reports_action_count_and_limit():
+    payload = json.loads(make_structured_plan_response())
+    payload["actions"] = [action_payload() for _ in range(41)]
+
+    with pytest.raises(ValueError, match="41 actions; the current limit is 40"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+
+def test_structured_planner_rejects_empty_actions_and_disallowed_commands():
+    payload = json.loads(make_structured_plan_response())
+    del payload["actions"]
+    with pytest.raises(ValueError, match="must include an actions array"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["actions"] = [{}]
+    with pytest.raises(ValueError):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["actions"][0]["operation"] = "delete"
+    with pytest.raises(ValueError, match="Only validated replace and create_file"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["validation_command"] = "pytest; whoami"
+    with pytest.raises(ValueError, match="disallowed validation command"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["tasks"][0]["verification_status"] = "verified"
+    payload["plan"]["tasks"][0]["acceptance_results"] = [{
+        "criterion": payload["plan"]["tasks"][0]["acceptance_criteria"][0],
+        "status": "met",
+        "evidence": "Model asserted the criterion passed.",
+    }]
+    with pytest.raises(ValueError, match="pending status"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+
+def test_structured_planner_rejects_duplicate_ids_cycles_and_missing_verification():
+    payload = json.loads(make_structured_plan_response())
+    first_task = payload["plan"]["tasks"][0]
+    second_task = {
+        **first_task,
+        "id": "step-3",
+        "task_type": "verification",
+        "description": "Verify the implementation",
+        "objective": "Verify the implementation",
+        "expected_files": [],
+        "dependencies": ["step-1"],
+    }
+    first_task["dependencies"] = ["step-3"]
+    payload["plan"]["tasks"].append(second_task)
+    with pytest.raises(ValueError, match="cycle"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["tasks"][0]["verification_steps"] = []
+    with pytest.raises(ValueError):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["tasks"][0]["dependencies"] = ["missing-task"]
+    with pytest.raises(ValueError, match="unknown dependencies"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["tasks"][0]["requirement_ids"] = ["missing-requirement"]
+    with pytest.raises(ValueError, match="unknown requirements"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["requirements"].append({
+        **payload["plan"]["requirements"][0],
+        "description": "Duplicate requirement",
+    })
+    with pytest.raises(ValueError, match="requirement IDs must be unique"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+    payload = json.loads(make_structured_plan_response())
+    payload["plan"]["tasks"][1]["id"] = payload["plan"]["tasks"][0]["id"]
+    with pytest.raises(ValueError, match="task IDs must be unique"):
+        TaskPlanner.parse_planning_result(json.dumps(payload))
+
+
 def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
-    prompt = TaskPlanner.prompt("Create a login page using HTML and CSS")
+    prompt = TaskPlanner.prompt(TaskPlanner.include_clarifications(
+        "Create a full-stack employee system",
+        [{
+            "question": "Which phase should come first?",
+            "answer": "Start with the backend, then do frontend phases.",
+        }],
+    ))
 
     assert "Infer the relevant existing target files" in prompt
     assert "do not require the user to name files" in prompt
@@ -225,6 +552,21 @@ def test_task_planner_prompt_infers_targets_and_proposes_multifile_changes():
     assert "one separate action per changed file" in prompt
     assert "main/entry-point file" in prompt
     assert "Do not return an empty actions array for an implementation request" in prompt
+    assert "Never ask a clarification question solely because of the 40-action" in prompt
+    assert "Start with the backend, then do frontend phases." in prompt
+
+
+def test_task_planner_detects_only_action_limit_clarifications():
+    assert TaskPlanner.is_action_limit_clarification([
+        "The maximum action limit is 40; should I split this into phases?"
+    ])
+    assert not TaskPlanner.is_action_limit_clarification([
+        "Which database should the application use?"
+    ])
+    assert not TaskPlanner.is_action_limit_clarification([
+        "The action limit is 40.",
+        "Should employee salaries be visible to all users?",
+    ])
 
 
 def test_task_planner_accepts_create_file_content_payload_without_losing_contents():
@@ -370,6 +712,409 @@ def test_agent_plans_related_changes_for_main_and_helper_files(agent_db, monkeyp
     assert "FILE: helpers.py\ndef calculate():" in service.contexts[0]
 
 
+def test_agent_stages_dependent_actions_until_prerequisite_is_verified(
+    agent_db,
+    monkeypatch,
+):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_dependency_plan_response()),
+    )
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update the application and add a helper"},
+    ).json()
+    task_id = created["id"]
+    task = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert task["status"] == "awaiting_approval"
+    assert [item["status"] for item in task["actions"]] == [
+        "awaiting_approval",
+        "scheduled",
+    ]
+    assert [item["status"] for item in task["plan_details"]["tasks"]] == [
+        "in_progress",
+        "pending",
+        "pending",
+    ]
+    blank_notes = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={"plan_task_id": "step-1", "verification_notes": "  "},
+    )
+    assert blank_notes.status_code == 422
+    premature = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-2",
+            "verification_notes": "The helper is ready.",
+        },
+    )
+    assert premature.status_code == 409
+
+    applied_first = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [0]},
+    ).json()
+    assert applied_first["status"] == "awaiting_validation"
+    assert applied_first["actions"][0]["status"] == "applied"
+    assert applied_first["actions"][1]["status"] == "scheduled"
+    assert applied_first["plan_details"]["tasks"][0]["status"] == "applied"
+
+    not_verified = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The entry point behavior is correct.",
+        },
+    ).json()
+    assert not_verified["status"] == "awaiting_validation"
+    assert not_verified["verification_status"] == "not_verified"
+    assert not_verified["plan_details"]["tasks"][0]["status"] == "applied"
+    assert not_verified["plan_details"]["tasks"][0]["verification_status"] == "not_verified"
+
+    completed_first = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The entry point behavior is correct.",
+            "acceptance_results": acceptance_results_for(
+                not_verified,
+                "step-1",
+                "Confirmed the entry point returns the specified behavior.",
+            ),
+        },
+    ).json()
+    assert completed_first["status"] == "awaiting_approval"
+    assert completed_first["actions"][1]["status"] == "awaiting_approval"
+    assert completed_first["plan_details"]["tasks"][1]["status"] == "in_progress"
+    assert completed_first["plan_details"]["tasks"][0]["verification_status"] == "verified"
+
+    applied_second = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [1]},
+    ).json()
+    assert applied_second["status"] == "awaiting_validation"
+    assert applied_second["plan_details"]["tasks"][1]["status"] == "applied"
+
+    completed_second = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-2",
+            "verification_notes": "The helper returns the expected value.",
+            "acceptance_results": acceptance_results_for(
+                applied_second,
+                "step-2",
+                "Called the helper and confirmed its expected return value.",
+            ),
+        },
+    ).json()
+    assert completed_second["status"] == "awaiting_validation"
+    assert completed_second["plan_details"]["tasks"][2]["status"] == "in_progress"
+
+    completed_verification = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-3",
+            "verification_notes": "The application and helper are consistent.",
+            "acceptance_results": acceptance_results_for(
+                completed_second,
+                "step-3",
+                "Confirmed the application and helper work together.",
+            ),
+        },
+    ).json()
+    assert completed_verification["status"] == "completed"
+    assert completed_verification["verification_status"] == "verified"
+    assert [item["status"] for item in completed_verification["plan_details"]["tasks"]] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+    assert any(
+        entry["plan_task_id"] == "step-1"
+        and entry.get("verification_notes") == "The entry point behavior is correct."
+        for entry in completed_verification["task_history"]
+    )
+
+
+def test_rejected_plan_action_blocks_dependent_tasks(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_dependency_plan_response()),
+    )
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update the application and add a helper"},
+    ).json()
+
+    rejected = client.post(
+        f"/ai/agent/tasks/{task['id']}/approve",
+        json={"reject_all": True},
+    ).json()
+
+    assert rejected["status"] == "failed"
+    assert [item["status"] for item in rejected["actions"]] == [
+        "rejected",
+        "blocked",
+    ]
+    assert [item["status"] for item in rejected["plan_details"]["tasks"]] == [
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
+
+
+def test_successful_validation_completes_verification_task(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_structured_plan_response("python -m pytest")),
+    )
+    monkeypatch.setattr(
+        agent_router,
+        "_run_project_validation_command",
+        lambda **kwargs: (
+            agent_router.TerminalContext(
+                command=kwargs["command"],
+                exit_code=0,
+                stdout="2 passed",
+                stderr="",
+                success=True,
+                timeout=False,
+            ),
+            [],
+        ),
+    )
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and test it"},
+    ).json()
+    task_id = task["id"]
+
+    applied = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    ).json()
+    assert applied["status"] == "awaiting_validation"
+    assert applied["plan_details"]["tasks"][0]["status"] == "applied"
+
+    ready_for_validation = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The requested behavior is implemented.",
+            "acceptance_results": acceptance_results_for(
+                applied,
+                "step-1",
+                "Confirmed calculate returns the requested value.",
+            ),
+        },
+    ).json()
+    assert ready_for_validation["status"] == "awaiting_approval"
+    assert ready_for_validation["plan_details"]["tasks"][1]["status"] == "in_progress"
+
+    validated = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python -m pytest", "approved": True},
+    ).json()
+
+    assert validated["status"] == "completed"
+    assert validated["verification_status"] == "verified"
+    assert validated["validation_result"]["success"] is True
+    assert [item["status"] for item in validated["plan_details"]["tasks"]] == [
+        "completed",
+        "completed",
+    ]
+    assert all(
+        item["verification_status"] == "verified"
+        for item in validated["plan_details"]["tasks"]
+    )
+
+
+def test_passing_command_does_not_claim_implementation_criteria_met(
+    agent_db,
+    monkeypatch,
+):
+    payload = json.loads(make_structured_plan_response("python -m pytest"))
+    payload["plan"]["tasks"] = payload["plan"]["tasks"][:1]
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(json.dumps(payload)),
+    )
+    monkeypatch.setattr(
+        agent_router,
+        "_run_project_validation_command",
+        lambda **kwargs: (
+            agent_router.TerminalContext(
+                command=kwargs["command"],
+                exit_code=0,
+                stdout="1 passed",
+                stderr="",
+                success=True,
+                timeout=False,
+            ),
+            [],
+        ),
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and run tests"},
+    ).json()
+    task_id = task["id"]
+    client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    )
+
+    validated = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python -m pytest", "approved": True},
+    ).json()
+
+    assert validated["validation_result"]["success"] is True
+    assert validated["status"] == "awaiting_validation"
+    assert validated["verification_status"] == "not_verified"
+    plan_task = validated["plan_details"]["tasks"][0]
+    assert plan_task["status"] == "applied"
+    assert plan_task["verification_status"] == "not_verified"
+    assert plan_task["acceptance_results"][0]["status"] == "not_verified"
+
+    completed = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The acceptance criterion was checked separately.",
+            "acceptance_results": acceptance_results_for(
+                validated,
+                "step-1",
+                "Invoked calculate and confirmed the expected return value.",
+            ),
+        },
+    ).json()
+    assert completed["status"] == "completed"
+    assert completed["verification_status"] == "verified"
+
+
+def test_unmet_acceptance_criterion_fails_task_with_evidence(agent_db, monkeypatch):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_structured_plan_response()),
+    )
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate"},
+    ).json()
+    task_id = task["id"]
+    applied = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    ).json()
+    criterion = applied["plan_details"]["tasks"][0]["acceptance_criteria"][0]
+
+    mismatched = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The check failed.",
+            "acceptance_results": [{
+                "criterion": "An unrelated criterion",
+                "status": "met",
+                "evidence": "No evidence.",
+            }],
+        },
+    )
+    assert mismatched.status_code == 422
+
+    result = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The requested behavior is not present.",
+            "acceptance_results": [{
+                "criterion": criterion,
+                "status": "not_met",
+                "evidence": "Calling calculate still returns the old value.",
+            }],
+        },
+    ).json()
+
+    assert result["status"] == "failed"
+    assert result["verification_status"] == "failed"
+    assert result["plan_details"]["tasks"][0]["status"] == "blocked"
+    assert result["plan_details"]["tasks"][0]["acceptance_results"][0]["status"] == "not_met"
+    assert result["validation_result"]["kind"] == "acceptance_criteria"
+
+
+def test_unavailable_docker_reports_verification_as_not_verified(
+    agent_db,
+    monkeypatch,
+):
+    monkeypatch.setenv("ENABLE_SANDBOX", "false")
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_structured_plan_response("python -m pytest")),
+    )
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and test it"},
+    ).json()
+    task_id = task["id"]
+    applied = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    ).json()
+    ready = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The requested behavior was checked manually.",
+            "acceptance_results": acceptance_results_for(
+                applied,
+                "step-1",
+                "Confirmed calculate returns the requested result.",
+            ),
+        },
+    ).json()
+    assert ready["status"] == "awaiting_approval"
+
+    unavailable = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python -m pytest", "approved": True},
+    ).json()
+
+    assert unavailable["status"] == "awaiting_validation"
+    assert unavailable["verification_status"] == "not_verified"
+    assert unavailable["validation_result"]["success"] is False
+    assert unavailable["validation_result"]["executed"] is False
+    assert unavailable["plan_details"]["tasks"][1]["verification_status"] == "pending"
+
+    manually_verified = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-2",
+            "verification_notes": "The expected result was manually verified.",
+            "acceptance_results": acceptance_results_for(
+                unavailable,
+                "step-2",
+                "Executed the application and observed the expected result.",
+            ),
+        },
+    ).json()
+    assert manually_verified["status"] == "completed"
+    assert manually_verified["verification_status"] == "verified"
+
+
 def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):
     persistent_sessions = sessionmaker(bind=agent_db.get_bind())
     first_store = AgentTaskStore(persistent_sessions)
@@ -379,7 +1124,28 @@ def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):
         task="Update a validated function",
     )
     task.status = "executing"
+    task.verification_status = "not_verified"
+    task.plan_details = json.loads(make_structured_plan_response())["plan"]
+    task.clarification_history = [{
+        "questions": "Which application type?",
+        "answer": "Command-line Python application",
+    }]
     task.actions = [{"status": "applied", "action": action_payload()}]
+    task.plan_details["tasks"][0]["status"] = "applied"
+    task.plan_details["tasks"][0]["verification_status"] = "not_verified"
+    task.plan_details["tasks"][0]["acceptance_results"] = [{
+        "criterion": task.plan_details["tasks"][0]["acceptance_criteria"][0],
+        "status": "not_verified",
+        "evidence": "Validation output did not assess the criterion.",
+    }]
+    task.task_history = [{
+        "plan_id": "test-plan",
+        "iteration": 1,
+        "plan_task_id": "step-1",
+        "status": "applied",
+        "description": "Approved changes were applied.",
+        "created_at": datetime.now().isoformat(),
+    }]
     task.changes = [{"path": "main.py", "content": "updated", "file_id": 11}]
     task.add_step("code_action", "completed", "Applied approved file change")
 
@@ -387,6 +1153,12 @@ def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):
 
     assert recovered is not None
     assert recovered.status == "paused"
+    assert recovered.verification_status == "not_verified"
+    assert recovered.plan_details["plan_id"] == "test-plan"
+    assert recovered.plan_details["tasks"][0]["status"] == "applied"
+    assert recovered.plan_details["tasks"][0]["acceptance_results"][0]["status"] == "not_verified"
+    assert recovered.task_history[0]["status"] == "applied"
+    assert recovered.clarification_history[0]["answer"] == "Command-line Python application"
     assert recovered.actions[0]["status"] == "applied"
     assert recovered.changes[0]["path"] == "main.py"
     assert recovered.steps[-1].description == "Applied approved file change"
@@ -605,6 +1377,130 @@ def test_agent_tools_block_traversal_secrets_and_other_projects(agent_db):
     assert ".env" not in tools.list_project_files()
 
 
+def test_agent_project_intelligence_uses_manifests_tests_and_repository_conventions(
+    agent_db,
+):
+    tests = ProjectFile(
+        id=60,
+        project_id=1,
+        name="tests",
+        type="folder",
+        content=None,
+        language=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    test_file = ProjectFile(
+        id=61,
+        project_id=1,
+        parent_id=60,
+        name="test_calculate.py",
+        type="file",
+        content="def test_calculate():\n    assert True\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    requirements = ProjectFile(
+        id=62,
+        project_id=1,
+        name="requirements.txt",
+        type="file",
+        content="fastapi>=0.100\npytest==8.0\n",
+        language="text",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    pytest_config = ProjectFile(
+        id=63,
+        project_id=1,
+        name="pytest.ini",
+        type="file",
+        content="[pytest]\n",
+        language="ini",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    readme = ProjectFile(
+        id=64,
+        project_id=1,
+        name="README.md",
+        type="file",
+        content="# Owned\n\npython main.py\n",
+        language="markdown",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add_all([tests, test_file, requirements, pytest_config, readme])
+    agent_db.commit()
+
+    profile = json.loads(AgentTools(agent_db, 1, 1).project_intelligence())
+
+    assert profile["project"]["name"] == "Owned"
+    assert len(json.dumps(profile)) <= AgentTools.MAX_PROJECT_PROFILE_CHARS
+    assert "main.py" in profile["entry_point_candidates"]
+    assert "tests/test_calculate.py" in profile["test_file_candidates"]
+    assert "pytest.ini" in profile["convention_files"]
+    assert profile["detected_frameworks"] == ["FastAPI"]
+    assert profile["readme_commands"] == [{
+        "path": "README.md",
+        "commands": "python main.py",
+    }]
+    assert {
+        dependency
+        for manifest in profile["manifests"]
+        for dependency in manifest.get("dependencies", [])
+    } >= {"fastapi", "pytest"}
+
+
+def test_agent_retrieval_combines_vector_and_lexical_context(agent_db, monkeypatch):
+    class FakeRelevance:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_context(self, query):
+            return SimpleNamespace(search_results=[
+                SimpleNamespace(path="lexical.py", content="lexical evidence"),
+                SimpleNamespace(path="shared.py", content="duplicate lexical evidence"),
+            ])
+
+    class FakeVector:
+        def __init__(self, **kwargs):
+            pass
+
+        def search_project_context(self, project_id, query, top_k):
+            return SimpleNamespace(chunks=[
+                SimpleNamespace(
+                    file_path="vector.py",
+                    start_line=1,
+                    end_line=2,
+                    language="python",
+                    content="vector evidence",
+                ),
+                SimpleNamespace(
+                    file_path="shared.py",
+                    start_line=1,
+                    end_line=2,
+                    language="python",
+                    content="shared vector evidence",
+                ),
+            ])
+
+    monkeypatch.setattr(
+        agent_tools_module,
+        "RepositoryRelevanceService",
+        FakeRelevance,
+    )
+    monkeypatch.setattr(agent_tools_module, "VectorRAGService", FakeVector)
+
+    context = AgentTools(agent_db, 1, 1).retrieve_context("find evidence")
+
+    assert "vector evidence" in context
+    assert "lexical evidence" in context
+    assert "shared vector evidence" in context
+    assert "duplicate lexical evidence" not in context
+
+
 def test_agent_tool_protocol_reads_files_and_finishes_read_only_request(
     agent_db,
     monkeypatch,
@@ -644,6 +1540,49 @@ def test_agent_tool_protocol_reads_files_and_finishes_read_only_request(
         "read_file completed",
     ]
     assert len(fake_ai.messages) == 3
+
+
+def test_agent_requests_material_clarification_before_proposing_changes(
+    agent_db,
+    monkeypatch,
+):
+    question = "Should this be a command-line app or a web application?"
+    responses = [
+        json.dumps({
+            "status": "clarification_required",
+            "plan": None,
+            "clarification_questions": [question],
+            "actions": [],
+            "validation_command": None,
+        }),
+        make_plan_response(),
+    ]
+    fake_ai = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", fake_ai)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Create an employee management system"},
+    )
+    task_id = created.json()["id"]
+    waiting = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert waiting["status"] == "awaiting_clarification"
+    assert waiting["clarification_questions"] == [question]
+    assert waiting["actions"] == []
+
+    resumed = client.post(
+        f"/ai/agent/tasks/{task_id}/clarify",
+        json={"answer": "Make it a command-line Python application."},
+    )
+    assert resumed.status_code == 200
+    planned = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert planned["status"] == "awaiting_approval"
+    assert planned["plan_details"]["requirements"]
+    assert "command-line Python application" in fake_ai.messages[-1]
+    assert "Name: Owned" in fake_ai.contexts[0]
+    assert "REPOSITORY INTELLIGENCE" in fake_ai.contexts[0]
+    assert '"entry_point_candidates": ["main.py"]' in fake_ai.contexts[0]
 
 
 def test_agent_create_file_tool_requires_approval_and_persists_afterward(
@@ -937,7 +1876,7 @@ def test_agent_task_requires_approval_before_applying_changes(agent_db, monkeypa
     assert file.content.endswith("return 2\n")
 
 
-def test_agent_approval_completes_if_repository_reindexing_fails(
+def test_agent_approval_preserves_file_if_repository_reindexing_fails(
     agent_db,
     monkeypatch,
 ):
@@ -962,7 +1901,8 @@ def test_agent_approval_completes_if_repository_reindexing_fails(
     )
 
     assert applied.status_code == 200
-    assert applied.json()["status"] == "completed"
+    assert applied.json()["status"] == "awaiting_validation"
+    assert applied.json()["plan_details"]["tasks"][0]["status"] == "applied"
     assert applied.json()["actions"][0]["status"] == "applied"
     assert applied.json()["changes"][0]["content"].endswith("return 2\n")
     assert agent_db.get(ProjectFile, 11).content.endswith("return 2\n")
@@ -1099,11 +2039,14 @@ def test_agent_retries_plan_when_replace_action_omits_old_code(agent_db, monkeyp
     assert task["status"] == "awaiting_approval"
     assert task["actions"][0]["action"]["old_code"] == "    return 1\n"
     assert any(step["description"] == "Repairing invalid implementation plan" for step in task["steps"])
-    assert [
+    plan_outputs = [
         step["output"]
         for step in task["steps"]
         if step["type"] == "plan" and step["output"]
-    ] == [invalid_response, valid_response]
+    ]
+    assert len(plan_outputs) == 2
+    assert json.loads(plan_outputs[0])["actions"][0].get("old_code") is None
+    assert json.loads(plan_outputs[1])["actions"][0]["old_code"] == "    return 1\n"
     assert len(set(agent_router.ai_service.loop_ids)) == 1
 
 
@@ -1295,6 +2238,113 @@ def test_agent_can_approve_remaining_actions_after_stale_patch(agent_db, monkeyp
     assert saved_other_file.content == "value = 2\n"
 
 
+def test_agent_retry_preserves_prior_applied_file_changes(agent_db, monkeypatch):
+    helper_file = ProjectFile(
+        id=14,
+        project_id=1,
+        name="helpers.py",
+        type="file",
+        content="def helper():\n    return 1\n",
+        language="python",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    agent_db.add(helper_file)
+    agent_db.commit()
+    initial_response = json.dumps({
+        "plan": ["Update the entry point", "Update the helper"],
+        "actions": [
+            action_payload(),
+            {
+                **action_payload(),
+                "file_path": "helpers.py",
+                "old_code": "    return 1\n",
+                "new_code": "    return 2\n",
+            },
+        ],
+        "validation_command": None,
+    })
+    corrected_helper = {
+        **action_payload(),
+        "file_path": "helpers.py",
+        "old_code": "    return 1\n",
+        "new_code": "    return 10\n",
+        "description": "Reapply the helper change against its current contents",
+    }
+    service = FakeAIService([
+        initial_response,
+        json.dumps({
+            "plan": ["Update the helper"],
+            "actions": [corrected_helper],
+            "validation_command": None,
+        }),
+    ])
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    client = make_agent_client(agent_db, monkeypatch)
+
+    created = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update the entry point and helper"},
+    ).json()
+    task_id = created["id"]
+
+    class FailingHelperActionService:
+        def __init__(self, db):
+            self.service = CodeActionService(db)
+
+        def apply_action(self, project_id, file_id, user_id, action):
+            if action.file_path == "helpers.py":
+                raise PatchNotFoundError("Simulated helper patch failure.")
+            return self.service.apply_action(
+                project_id=project_id,
+                file_id=file_id,
+                user_id=user_id,
+                action=action,
+            )
+
+    monkeypatch.setattr(
+        agent_router,
+        "CodeActionService",
+        FailingHelperActionService,
+    )
+    partial = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    ).json()
+
+    assert partial["status"] == "failed"
+    assert [item["status"] for item in partial["actions"]] == ["applied", "failed"]
+    assert agent_db.get(ProjectFile, 11).content.endswith("return 2\n")
+    monkeypatch.setattr(
+        agent_router,
+        "CodeActionService",
+        lambda db: CodeActionService(db),
+    )
+
+    retried = client.post(f"/ai/agent/tasks/{task_id}/continue")
+    recovered = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert retried.status_code == 202
+    assert recovered["status"] == "awaiting_approval"
+    assert [item["status"] for item in recovered["actions"]] == [
+        "applied",
+        "awaiting_approval",
+    ]
+    assert recovered["actions"][0]["action"]["file_path"] == "main.py"
+    assert recovered["actions"][1]["action"]["file_path"] == "helpers.py"
+    assert any(entry["iteration"] == 0 for entry in recovered["task_history"])
+    assert any(entry["iteration"] == 1 for entry in recovered["task_history"])
+
+    correction = client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"action_indexes": [1]},
+    ).json()
+    assert correction["actions"][0]["status"] == "applied"
+    assert correction["actions"][1]["status"] == "applied"
+    assert agent_db.get(ProjectFile, 11).content.endswith("return 2\n")
+    assert agent_db.get(ProjectFile, 14).content.endswith("return 10\n")
+
+
 def test_agent_approval_preserves_file_changes_outside_patch(agent_db, monkeypatch):
     client = make_agent_client(agent_db, monkeypatch)
     monkeypatch.setattr(agent_router, "ai_service", FakeAIService(make_plan_response()))
@@ -1310,7 +2360,8 @@ def test_agent_approval_preserves_file_changes_outside_patch(agent_db, monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "completed"
+    assert response.json()["status"] == "awaiting_validation"
+    assert response.json()["plan_details"]["tasks"][0]["status"] == "applied"
     assert response.json()["actions"][0]["status"] == "applied"
     assert file.content == "def calculate():\n    return 2\n# user edit after proposal\n"
 
@@ -1389,6 +2440,7 @@ def test_agent_validation_does_not_fall_back_to_host_without_docker(monkeypatch)
     result = agent_router._run_validation_command(1, "python -m pytest")
 
     assert result.success is False
+    assert result.executed is False
     assert result.exit_code == 127
     assert "not executed on the host" in result.stderr
 
@@ -1802,8 +2854,18 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
         "new_code": "    return 3\n",
         "description": "Correct the return value",
     }
+    invalid_correction = json.dumps({
+        "plan": ["Correct the function after failed validation"],
+        "actions": [{
+            **correction,
+            "old_code": "",
+        }],
+        "validation_command": "python -m pytest",
+    })
     responses = [
         make_plan_response("python -m pytest"),
+        invalid_correction,
+        invalid_correction,
         json.dumps({
             "plan": ["Correct the function after failed validation"],
             "actions": [correction],
@@ -1811,7 +2873,9 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
         }),
     ]
     client = make_agent_client(agent_db, monkeypatch)
-    monkeypatch.setattr(agent_router, "ai_service", FakeAIService(responses))
+    service = FakeAIService(responses)
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    monkeypatch.setattr(agent_router, "AI_AGENT_MAX_CORRECTION_RETRIES", 1)
     monkeypatch.setattr(agent_router.sandbox_service, "is_available", lambda: True)
     terminal_results = iter([
         SimpleNamespace(
@@ -1867,6 +2931,19 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
         f"/ai/agent/tasks/{task_id}/approve",
         json={"action_indexes": [0]},
     ).json()
+    assert applied["status"] == "awaiting_validation"
+    applied = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The requested change is ready for validation.",
+            "acceptance_results": acceptance_results_for(
+                applied,
+                "step-1",
+                "Confirmed the requested change is implemented.",
+            ),
+        },
+    ).json()
     assert applied["status"] == "awaiting_approval"
 
     failed = client.post(
@@ -1878,20 +2955,169 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
 
     continued = client.post(f"/ai/agent/tasks/{task_id}/continue")
     assert continued.status_code == 202
+    failed_correction = client.get(f"/ai/agent/tasks/{task_id}").json()
+    assert failed_correction["status"] == "failed"
+    assert failed_correction["actions"][0]["status"] == "applied"
+    assert sum(
+        step["description"] == "Repairing invalid correction proposal"
+        for step in failed_correction["steps"]
+    ) == 1
+    assert "COMPLETED WORK TO PRESERVE" in service.messages[1]
+    assert "completed_plan_tasks" in service.messages[1]
+    assert "empty old_code is only valid at line 1" in service.messages[2]
+    assert "COMPLETED WORK TO PRESERVE" in service.messages[2]
+
+    retried = client.post(f"/ai/agent/tasks/{task_id}/continue")
+    assert retried.status_code == 202
     correction_task = client.get(f"/ai/agent/tasks/{task_id}").json()
     assert correction_task["status"] == "awaiting_approval"
-    assert correction_task["iteration"] == 1
+    assert correction_task["iteration"] == 2
+    assert any(
+        entry["iteration"] == 0
+        and entry["plan_task_id"] == "step-1"
+        and entry["status"] == "completed"
+        for entry in correction_task["task_history"]
+    )
+    assert any(
+        entry["iteration"] == 2
+        and entry["plan_task_id"] == "step-1"
+        and entry["status"] == "in_progress"
+        for entry in correction_task["task_history"]
+    )
 
     correction_applied = client.post(
         f"/ai/agent/tasks/{task_id}/approve",
-        json={"action_indexes": [0]},
+        json={"action_indexes": [1]},
     ).json()
-    assert correction_applied["actions"][0]["status"] == "applied"
+    assert correction_applied["status"] == "awaiting_approval"
+    assert [item["status"] for item in correction_applied["actions"]] == [
+        "applied",
+        "applied",
+    ]
+    assert any(
+        entry["iteration"] == 2
+        and entry["plan_task_id"] == "step-1"
+        and entry["status"] == "applied"
+        for entry in correction_applied["task_history"]
+    )
+    assert len(service.messages) == 4
     completed = client.post(
         f"/ai/agent/tasks/{task_id}/validate",
         json={"command": "python -m pytest", "approved": True},
     ).json()
 
+    assert completed["status"] == "awaiting_validation"
+    completed = client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The corrected behavior satisfies the criterion.",
+            "acceptance_results": acceptance_results_for(
+                completed,
+                "step-1",
+                "Confirmed calculate returns the corrected value.",
+            ),
+        },
+    ).json()
     assert completed["status"] == "completed"
     assert completed["validation_result"]["success"] is True
     assert agent_db.get(ProjectFile, 11).content.endswith("return 3\n")
+
+
+def test_agent_correction_clarification_preserves_applied_work(agent_db, monkeypatch):
+    correction = {
+        **action_payload(),
+        "old_code": "    return 2\n",
+        "new_code": "    return 3\n",
+        "description": "Correct the return value",
+    }
+    clarification = json.dumps({
+        "status": "clarification_required",
+        "plan": None,
+        "clarification_questions": ["Should the correction preserve the existing return type?"],
+        "actions": [],
+        "validation_command": None,
+    })
+    service = FakeAIService([
+        make_structured_plan_response("python -m pytest"),
+        clarification,
+        make_structured_plan_response("python -m pytest", [correction]),
+    ])
+    monkeypatch.setattr(agent_router, "ai_service", service)
+    monkeypatch.setattr(
+        agent_router,
+        "_run_project_validation_command",
+        lambda **kwargs: (
+            agent_router.TerminalContext(
+                command=kwargs["command"],
+                exit_code=1,
+                stdout="",
+                stderr="assertion failed",
+                success=False,
+                timeout=False,
+            ),
+            [],
+        ),
+    )
+    client = make_agent_client(agent_db, monkeypatch)
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and verify it"},
+    ).json()
+    task_id = task["id"]
+    client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    )
+    client.post(
+        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
+        json={
+            "plan_task_id": "step-1",
+            "verification_notes": "The original implementation task was applied.",
+            "acceptance_results": acceptance_results_for(
+                client.get(f"/ai/agent/tasks/{task_id}").json(),
+                "step-1",
+                "Confirmed the original implementation behavior.",
+            ),
+        },
+    )
+    client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python -m pytest", "approved": True},
+    )
+
+    client.post(f"/ai/agent/tasks/{task_id}/continue")
+    awaiting_clarification = client.get(
+        f"/ai/agent/tasks/{task_id}"
+    ).json()
+    assert awaiting_clarification["status"] == "awaiting_clarification"
+    assert awaiting_clarification["actions"][0]["status"] == "applied"
+    assert awaiting_clarification["plan_details"]["tasks"][0]["status"] == "completed"
+    assert any(
+        entry["status"] == "completed"
+        for entry in awaiting_clarification["task_history"]
+    )
+
+    clarified = client.post(
+        f"/ai/agent/tasks/{task_id}/clarify",
+        json={"answer": "Keep the existing return type."},
+    )
+    recovered = client.get(f"/ai/agent/tasks/{task_id}").json()
+
+    assert clarified.status_code == 200
+    assert recovered["status"] == "awaiting_approval"
+    assert [item["status"] for item in recovered["actions"]] == [
+        "applied",
+        "awaiting_approval",
+    ]
+    assert any(
+        step["type"] == "clarification"
+        and step["input"] == "Keep the existing return type."
+        for step in recovered["steps"]
+    )
+    assert any(
+        entry["iteration"] == 0
+        and entry.get("verification_notes")
+        == "The original implementation task was applied."
+        for entry in recovered["task_history"]
+    )

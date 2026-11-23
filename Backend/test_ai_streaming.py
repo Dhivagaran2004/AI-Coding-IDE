@@ -102,26 +102,26 @@ def test_stream_endpoint_returns_safe_error_event(monkeypatch):
         (
             401,
             "AI provider authentication failed (HTTP 401). "
-            "Check GROQ_API_KEY and provider access.",
+            "Check the configured provider API key and access.",
         ),
         (
             404,
-            "Configured Groq model was not found (HTTP 404). "
-            "Check GROQ_MODEL.",
+            "Configured AI model was not found (HTTP 404). "
+            "Check the provider model setting.",
         ),
         (
             429,
-            "Groq rate limit or quota was reached (HTTP 429). "
-            "Check your Groq plan and try again later.",
+            "AI provider rate limit or quota was reached (HTTP 429). "
+            "Check your provider plan and try again later.",
         ),
         (
             402,
-            "Groq rejected the request because of a billing or quota issue "
-            "(HTTP 402). Check your Groq account limits.",
+            "AI provider rejected the request because of a billing or quota issue "
+            "(HTTP 402). Check your provider account limits.",
         ),
         (
             408,
-            "Groq request timed out. Try again.",
+            "AI provider request timed out. Try again.",
         ),
     ],
 )
@@ -197,3 +197,122 @@ def test_ai_json_request_has_a_total_timeout():
         asyncio.run(service.chat_json("Return a plan"))
 
     assert provider.calls == 1
+
+
+def test_ai_service_fails_over_on_primary_rate_limit_for_chat_json_and_chat():
+    class RateLimitedProvider:
+        provider_name = "groq"
+        model = "primary-model"
+        calls = 0
+
+        async def generate(self, **_kwargs):
+            self.calls += 1
+            raise ProviderStatusError(429)
+
+        async def generate_json(self, **_kwargs):
+            self.calls += 1
+            raise ProviderStatusError(429)
+
+    class AvailableProvider:
+        provider_name = "gemini"
+        model = "fallback-model"
+
+        async def generate(self, **_kwargs):
+            return "fallback chat"
+
+        async def generate_json(self, **_kwargs):
+            return '{"status":"ready"}'
+
+    primary = RateLimitedProvider()
+    fallback = AvailableProvider()
+    service = AIService(
+        provider=primary,
+        fallback_provider=fallback,
+        max_retries=2,
+        retry_base_delay=0,
+    )
+
+    async def run_requests():
+        chat_response = await service.chat("hello")
+        first_active_provider = service.current_provider
+        json_response = await service.chat_json("plan")
+        return (
+            chat_response,
+            first_active_provider,
+            json_response,
+            service.current_provider,
+        )
+
+    chat_response, first_provider, json_response, second_provider = asyncio.run(
+        run_requests()
+    )
+    assert chat_response == "fallback chat"
+    assert first_provider is fallback
+    assert json_response == '{"status":"ready"}'
+    assert second_provider is fallback
+    assert primary.calls == 1
+
+
+def test_ai_service_fails_over_for_stream_rate_limit_before_first_chunk():
+    class RateLimitedProvider:
+        async def generate(self, **_kwargs):
+            return ""
+
+        async def generate_stream(self, **_kwargs):
+            raise ProviderStatusError(429)
+            yield ""
+
+    class AvailableProvider:
+        provider_name = "gemini"
+        model = "fallback-model"
+
+        async def generate(self, **_kwargs):
+            return ""
+
+        async def generate_stream(self, **_kwargs):
+            yield "complete "
+            yield "fallback"
+
+    fallback = AvailableProvider()
+    service = AIService(
+        provider=RateLimitedProvider(),
+        fallback_provider=fallback,
+        max_retries=0,
+    )
+
+    async def collect():
+        chunks = [chunk async for chunk in service.stream("hello")]
+        return chunks, service.current_provider
+
+    chunks, active_provider = asyncio.run(collect())
+    assert chunks == ["complete ", "fallback"]
+    assert active_provider is fallback
+
+
+def test_ai_service_does_not_fail_over_after_partial_stream_output():
+    class PartialRateLimitedProvider:
+        async def generate(self, **_kwargs):
+            return ""
+
+        async def generate_stream(self, **_kwargs):
+            yield "partial"
+            raise ProviderStatusError(429)
+
+    class AvailableProvider:
+        async def generate(self, **_kwargs):
+            return ""
+
+        async def generate_stream(self, **_kwargs):
+            yield "duplicate"
+
+    service = AIService(
+        provider=PartialRateLimitedProvider(),
+        fallback_provider=AvailableProvider(),
+        max_retries=0,
+    )
+
+    async def collect():
+        return [chunk async for chunk in service.stream("hello")]
+
+    with pytest.raises(ProviderStatusError):
+        asyncio.run(collect())

@@ -24,6 +24,8 @@ export interface TerminalExecuteResponse {
     stderr: string;
 
     success: boolean;
+
+    executed?: boolean;
 }
 
 export type TerminalAIContext = TerminalExecuteResponse & {

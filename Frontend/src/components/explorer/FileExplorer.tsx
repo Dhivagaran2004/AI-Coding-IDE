@@ -11,6 +11,8 @@ import {
     ChevronDown,
     ChevronRight,
     File,
+    FileCode2,
+    FileText,
     Folder,
     FolderOpen,
     Plus,
@@ -38,6 +40,9 @@ import type {
 interface FileExplorerProps {
 
     projectId: number;
+    refreshKey?: number;
+    workspaceName?: string;
+    activeFileId?: number | null;
 
     onFileSelect?: (
         file: FileTreeNode
@@ -70,6 +75,7 @@ interface FileTreeItemProps {
     node: FileTreeNode;
 
     level: number;
+    activeFileId?: number | null;
 
     onFileSelect?: (
         file: FileTreeNode
@@ -112,6 +118,7 @@ interface ContextMenuPosition {
 function FileTreeItem({
     node,
     level,
+    activeFileId,
     onFileSelect,
     onCreateFile,
     onCreateFolder,
@@ -141,6 +148,8 @@ function FileTreeItem({
 
     const isFolder =
         node.type === "folder";
+    const isSelected =
+        !isFolder && node.id === activeFileId;
 
 
     const hasChildren =
@@ -469,10 +478,11 @@ function FileTreeItem({
 
                 <button
                     type="button"
-                    className="file-tree-item"
+                    className={`file-tree-item${isSelected ? " selected" : ""}`}
                     onClick={
                         handleClick
                     }
+                    aria-current={isSelected ? "page" : undefined}
                 >
 
                     {/* Folder Expand Icon */}
@@ -534,12 +544,12 @@ function FileTreeItem({
 
                         )
 
+                    ) : /\.(?:[cm]?[jt]sx?|py|java|c|h|cpp|hpp|cs|go|rs|php|rb|swift|kt|html?|css|scss|json|ya?ml|sql|sh)$/i.test(node.name) ? (
+                        <FileCode2 size={17} />
+                    ) : /\.(?:md|txt|log)$/i.test(node.name) ? (
+                        <FileText size={17} />
                     ) : (
-
-                        <File
-                            size={17}
-                        />
-
+                        <File size={17} />
                     )}
 
 
@@ -727,6 +737,7 @@ function FileTreeItem({
                                     level={
                                         level + 1
                                     }
+                                    activeFileId={activeFileId}
 
                                     onFileSelect={
                                         onFileSelect
@@ -767,6 +778,9 @@ function FileTreeItem({
 
 export default function FileExplorer({
     projectId,
+    refreshKey = 0,
+    workspaceName,
+    activeFileId,
     onFileSelect,
     onCreateFile,
     onCreateFolder,
@@ -790,6 +804,8 @@ export default function FileExplorer({
         error,
         setError,
     ] = useState("");
+
+    const [isRootExpanded, setIsRootExpanded] = useState(true);
 
 
     // ========================================================
@@ -855,7 +871,7 @@ export default function FileExplorer({
 
         loadTree();
 
-    }, [projectId]);
+    }, [projectId, refreshKey]);
 
 
     // ========================================================
@@ -1097,9 +1113,21 @@ export default function FileExplorer({
             ================================================= */}
 
             <div className="explorer-project-name">
-
-                PROJECT FILES
-
+                <button
+                    type="button"
+                    className="explorer-root-toggle"
+                    aria-label={`${isRootExpanded ? "Collapse" : "Expand"} project root`}
+                    aria-expanded={isRootExpanded}
+                    onClick={() => setIsRootExpanded((expanded) => !expanded)}
+                >
+                    {isRootExpanded
+                        ? <ChevronDown size={14} aria-hidden="true" />
+                        : <ChevronRight size={14} aria-hidden="true" />}
+                    {isRootExpanded
+                        ? <FolderOpen size={16} aria-hidden="true" />
+                        : <Folder size={16} aria-hidden="true" />}
+                    <span>{workspaceName || `Project ${projectId}`}</span>
+                </button>
             </div>
 
 
@@ -1107,7 +1135,10 @@ export default function FileExplorer({
                 File Tree
             ================================================= */}
 
-            <div className="explorer-tree">
+            <div
+                className="explorer-tree"
+                style={{ display: isRootExpanded ? "block" : "none" }}
+            >
 
                 {/* Loading */}
 
@@ -1177,6 +1208,7 @@ export default function FileExplorer({
                                 }
 
                                 level={0}
+                                activeFileId={activeFileId}
 
                                 onFileSelect={
                                     onFileSelect

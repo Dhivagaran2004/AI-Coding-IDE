@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -126,6 +127,11 @@ def test_token_limit_includes_in_flight_reservations_and_configuration_updates(d
 
 def test_chat_and_stream_each_create_one_usage_record(db, monkeypatch):
     class FakeAIService:
+        current_provider = SimpleNamespace(
+            provider_name="gemini",
+            model="fallback-test-model",
+        )
+
         async def chat(self, message, context=None, history=None):
             return "A normal response."
 
@@ -162,7 +168,23 @@ def test_chat_and_stream_each_create_one_usage_record(db, monkeypatch):
         "succeeded",
     ]
     assert all(record.total_tokens > 0 for record in records)
+    assert [(record.provider, record.model) for record in records] == [
+        ("gemini", "fallback-test-model"),
+        ("gemini", "fallback-test-model"),
+    ]
     assert "A streamed response." in streamed.text
+    assert ordinary.json()["provider"] == "gemini"
+    assert ordinary.json()["model"] == "fallback-test-model"
+    done_event = json.loads(
+        next(
+            line.removeprefix("data: ")
+            for line in streamed.text.splitlines()
+            if line.startswith("data: ")
+            and json.loads(line.removeprefix("data: "))["type"] == "done"
+        )
+    )
+    assert done_event["response"]["provider"] == "gemini"
+    assert done_event["response"]["model"] == "fallback-test-model"
 
 
 def test_api_rejects_usage_over_limit_without_calling_provider(db, monkeypatch):

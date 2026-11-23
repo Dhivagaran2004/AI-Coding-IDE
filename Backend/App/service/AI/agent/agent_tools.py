@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import PurePosixPath
 from typing import cast
@@ -53,6 +54,10 @@ class GetExecutionResultArguments(AgentToolArguments):
 class AgentTools:
     MAX_INSPECT_CHARS = 25000
     MAX_SEARCH_RESULTS = 20
+    MAX_PROFILE_FILES = 1000
+    MAX_PROFILE_MANIFESTS = 8
+    MAX_PROFILE_DEPENDENCIES = 10
+    MAX_PROJECT_PROFILE_CHARS = 8000
     SEARCH_STOP_WORDS = {
         "a",
         "add",
@@ -83,6 +88,96 @@ class AgentTools:
     MODULE_IMPORT = re.compile(
         r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']"""
     )
+    LANGUAGE_BY_EXTENSION = {
+        ".c": "C",
+        ".cc": "C++",
+        ".cpp": "C++",
+        ".cs": "C#",
+        ".css": "CSS",
+        ".dart": "Dart",
+        ".go": "Go",
+        ".html": "HTML",
+        ".java": "Java",
+        ".js": "JavaScript",
+        ".jsx": "JavaScript",
+        ".kt": "Kotlin",
+        ".php": "PHP",
+        ".py": "Python",
+        ".rb": "Ruby",
+        ".rs": "Rust",
+        ".scss": "SCSS",
+        ".sh": "Shell",
+        ".sql": "SQL",
+        ".swift": "Swift",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript",
+        ".vue": "Vue",
+    }
+    MANIFEST_NAMES = {
+        "build.gradle": "Gradle build manifest",
+        "build.gradle.kts": "Gradle Kotlin build manifest",
+        "cargo.toml": "Rust package manifest",
+        "composer.json": "PHP dependency manifest",
+        "gemfile": "Ruby dependency manifest",
+        "go.mod": "Go module manifest",
+        "makefile": "Make build configuration",
+        "package.json": "Node.js package manifest",
+        "pom.xml": "Maven build manifest",
+        "pyproject.toml": "Python project configuration",
+        "setup.cfg": "Python project configuration",
+        "setup.py": "Python project configuration",
+    }
+    ENTRY_POINT_NAMES = {
+        "__main__.py",
+        "app.py",
+        "asgi.py",
+        "cli.py",
+        "index.js",
+        "index.jsx",
+        "index.ts",
+        "index.tsx",
+        "main.go",
+        "main.java",
+        "main.js",
+        "main.py",
+        "main.rs",
+        "main.ts",
+        "main.tsx",
+        "manage.py",
+        "server.js",
+        "server.ts",
+        "wsgi.py",
+    }
+    CONVENTION_NAMES = {
+        ".editorconfig",
+        ".eslintrc",
+        ".eslintrc.json",
+        ".flake8",
+        ".prettierrc",
+        ".prettierrc.json",
+        ".ruff.toml",
+        "eslint.config.cjs",
+        "eslint.config.js",
+        "eslint.config.mjs",
+        "jest.config.js",
+        "jest.config.ts",
+        "makefile",
+        "pytest.ini",
+        "ruff.toml",
+        "tsconfig.json",
+        "tox.ini",
+        "vitest.config.js",
+        "vitest.config.ts",
+    }
+    FRAMEWORK_DEPENDENCIES = {
+        "Django": {"django"},
+        "Express": {"express"},
+        "FastAPI": {"fastapi"},
+        "Flask": {"flask"},
+        "Next.js": {"next"},
+        "React": {"react"},
+        "Vite": {"vite"},
+    }
 
     def __init__(self, db: Session, project_id: int, user_id: int):
         self.db = db
@@ -97,8 +192,300 @@ class AgentTools:
         )
         if project is None:
             raise AgentToolError("Project not found.")
+        self.project = project
+        self._project_file_paths: list[str] | None = None
+
+    def project_intelligence(self) -> str:
+        paths = self.list_project_files()[:self.MAX_PROFILE_FILES]
+        manifests = [
+            path
+            for path in paths
+            if PurePosixPath(path).name.casefold() in self.MANIFEST_NAMES
+            or (
+                PurePosixPath(path).name.casefold().startswith("requirements")
+                and PurePosixPath(path).suffix.casefold() == ".txt"
+            )
+        ][:self.MAX_PROFILE_MANIFESTS]
+        manifest_summaries = []
+        dependency_names: set[str] = set()
+        package_metadata: dict[str, str] = {}
+        package_scripts: dict[str, str] = {}
+        for path in manifests:
+            try:
+                file_data = self.inspect_file(path)
+            except AgentToolError:
+                continue
+            content = cast(str, file_data["content"])
+            summary: dict[str, object] = {
+                "path": path[:160],
+                "type": self._manifest_type(path),
+            }
+            names, metadata, scripts = self._manifest_details(path, content)
+            dependency_names.update(names)
+            if metadata:
+                package_metadata.update(metadata)
+                summary.update(metadata)
+            if scripts:
+                package_scripts.update(scripts)
+                summary["scripts"] = scripts
+            if names:
+                summary["dependencies"] = [
+                    name[:80]
+                    for name in sorted(names)[:self.MAX_PROFILE_DEPENDENCIES]
+                ]
+            manifest_summaries.append(summary)
+
+        extension_counts: dict[str, int] = {}
+        for path in paths:
+            language = self.LANGUAGE_BY_EXTENSION.get(
+                PurePosixPath(path).suffix.casefold()
+            )
+            if language:
+                extension_counts[language] = extension_counts.get(language, 0) + 1
+
+        entry_points = [
+            path[:160] for path in paths
+            if PurePosixPath(path).name.casefold() in self.ENTRY_POINT_NAMES
+        ][:8]
+        test_paths = [
+            path[:160] for path in paths if self._is_test_path(path)
+        ][:8]
+        convention_paths = [
+            path[:160]
+            for path in paths
+            if self._is_convention_path(path)
+        ][:8]
+        top_level_directories = sorted({
+            PurePosixPath(path).parts[0][:160]
+            for path in paths
+            if len(PurePosixPath(path).parts) > 1
+        })[:20]
+        readme_commands = self._readme_commands(
+            [path for path in paths if PurePosixPath(path).name.casefold().startswith("readme")][:2]
+        )
+        frameworks = sorted(
+            framework
+            for framework, names in self.FRAMEWORK_DEPENDENCIES.items()
+            if names & {name.casefold() for name in dependency_names}
+        )
+        profile: dict[str, object] = {
+            "project": {
+                "name": cast(str, self.project.name),
+                "description": (cast(str | None, self.project.description) or "")[:500],
+                "configured_language": cast(str | None, self.project.language) or "unknown",
+            },
+            "safe_project_file_count": len(paths),
+            "file_inventory_truncated": len(paths) == self.MAX_PROFILE_FILES,
+            "detected_languages": dict(sorted(extension_counts.items())),
+            "top_level_directories": top_level_directories,
+            "manifests": manifest_summaries,
+            "detected_frameworks": frameworks,
+            "entry_point_candidates": entry_points,
+            "test_file_candidates": test_paths,
+            "convention_files": convention_paths,
+            "readme_commands": readme_commands,
+            "evidence_note": (
+                "Detected from project file paths and manifest contents; "
+                "entry points and conventions are candidates, not execution-verified."
+            ),
+        }
+        if package_metadata:
+            profile["package_metadata"] = package_metadata
+        if package_scripts:
+            profile["package_scripts"] = package_scripts
+        serialized = json.dumps(profile, ensure_ascii=True, sort_keys=True)
+        if len(serialized) > self.MAX_PROJECT_PROFILE_CHARS:
+            profile["readme_commands"] = []
+            profile["entry_point_candidates"] = entry_points[:4]
+            profile["test_file_candidates"] = test_paths[:4]
+            profile["convention_files"] = convention_paths[:4]
+            profile["manifests"] = [
+                {
+                    key: value
+                    for key, value in summary.items()
+                    if key in {"path", "type", "package_name", "module"}
+                }
+                for summary in manifest_summaries[:4]
+            ]
+            profile.pop("package_scripts", None)
+            serialized = json.dumps(profile, ensure_ascii=True, sort_keys=True)
+        if len(serialized) > self.MAX_PROJECT_PROFILE_CHARS:
+            profile = {
+                "project": profile["project"],
+                "safe_project_file_count": len(paths),
+                "detected_languages": dict(sorted(extension_counts.items())),
+                "evidence_note": (
+                    "The project profile was summarized to fit the context limit; "
+                    "some inventory items were omitted."
+                ),
+            }
+            serialized = json.dumps(profile, ensure_ascii=True, sort_keys=True)
+        return serialized
+
+    @classmethod
+    def _manifest_type(cls, file_path: str) -> str:
+        name = PurePosixPath(file_path).name.casefold()
+        if name.startswith("requirements") and name.endswith(".txt"):
+            return "Python requirements"
+        return cls.MANIFEST_NAMES.get(name, "Dependency or build manifest")
+
+    @classmethod
+    def _manifest_details(
+        cls,
+        file_path: str,
+        content: str,
+    ) -> tuple[set[str], dict[str, str], dict[str, str]]:
+        name = PurePosixPath(file_path).name.casefold()
+        dependencies: set[str] = set()
+        metadata: dict[str, str] = {}
+        scripts: dict[str, str] = {}
+        if name == "package.json" or name == "composer.json":
+            try:
+                manifest = json.loads(content)
+            except json.JSONDecodeError:
+                return dependencies, {"parse_status": "invalid JSON"}, scripts
+            if not isinstance(manifest, dict):
+                return dependencies, {"parse_status": "unexpected JSON shape"}, scripts
+            package_name = manifest.get("name")
+            if isinstance(package_name, str) and package_name:
+                metadata["package_name"] = package_name[:200]
+            dependency_sections = (
+                ("dependencies", "devDependencies", "peerDependencies")
+                if name == "package.json"
+                else ("require", "require-dev")
+            )
+            for section in dependency_sections:
+                section_data = manifest.get(section)
+                if isinstance(section_data, dict):
+                    dependencies.update(
+                        key.casefold()[:120]
+                        for key in section_data
+                        if isinstance(key, str) and key
+                    )
+            raw_scripts = manifest.get("scripts")
+            if name == "package.json" and isinstance(raw_scripts, dict):
+                scripts = {
+                    key[:80]: value[:200]
+                    for key, value in raw_scripts.items()
+                    if isinstance(key, str)
+                    and isinstance(value, str)
+                    and key in {"build", "dev", "start", "test", "lint", "typecheck"}
+                }
+            return dependencies, metadata, scripts
+
+        if name.startswith("requirements") and name.endswith(".txt"):
+            for line in content.splitlines():
+                match = re.match(
+                    r"\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
+                    r"(?:\[[^\]]+\])?\s*(?:[<>=!~;].*)?$",
+                    line.split("#", 1)[0].strip(),
+                )
+                if match:
+                    dependencies.add(match.group(1).casefold())
+            return dependencies, metadata, scripts
+
+        if name == "pyproject.toml":
+            project_name = re.search(
+                r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""",
+                content,
+            )
+            if project_name:
+                metadata["package_name"] = project_name.group(1)[:200]
+            dependency_blocks = re.finditer(
+                r"""(?ms)^\s*(?:dependencies|optional-dependencies)\s*=\s*\[(.*?)\]""",
+                content,
+            )
+            for block in dependency_blocks:
+                dependencies.update(
+                    match.casefold()
+                    for match in re.findall(
+                        r"""["']\s*([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?\s*(?:[<>=!~].*)?["']""",
+                        block.group(1),
+                    )
+                )
+            return dependencies, metadata, scripts
+
+        if name == "go.mod":
+            module = re.search(r"(?m)^\s*module\s+(\S+)", content)
+            if module:
+                metadata["module"] = module.group(1)[:200]
+            require_blocks = re.findall(r"(?ms)^\s*require\s*\((.*?)\)", content)
+            for block in require_blocks:
+                dependencies.update(
+                    line.split()[0].casefold()
+                    for line in block.splitlines()
+                    if line.strip() and not line.lstrip().startswith("//")
+                )
+            return dependencies, metadata, scripts
+
+        if name == "cargo.toml":
+            section = ""
+            for line in content.splitlines():
+                header = re.match(r"\s*\[([^\]]+)\]", line)
+                if header:
+                    section = header.group(1).casefold()
+                elif section in {"dependencies", "dev-dependencies", "build-dependencies"}:
+                    dependency = re.match(r"\s*([A-Za-z0-9_-]+)\s*=", line)
+                    if dependency:
+                        dependencies.add(dependency.group(1).casefold())
+                elif section == "package":
+                    package_name = re.match(
+                        r"""^\s*name\s*=\s*["']([^"']+)["']""",
+                        line,
+                    )
+                    if package_name:
+                        metadata["package_name"] = package_name.group(1)[:200]
+            return dependencies, metadata, scripts
+        return dependencies, metadata, scripts
+
+    @staticmethod
+    def _is_test_path(file_path: str) -> bool:
+        path = file_path.casefold()
+        name = PurePosixPath(path).name
+        return (
+            any(part in {"test", "tests", "__tests__", "spec", "specs"}
+                for part in PurePosixPath(path).parts[:-1])
+            or name.startswith("test_")
+            or name.endswith(("_test.go", "_test.py"))
+            or ".test." in name
+            or ".spec." in name
+        )
+
+    @classmethod
+    def _is_convention_path(cls, file_path: str) -> bool:
+        name = PurePosixPath(file_path).name.casefold()
+        return (
+            name in cls.CONVENTION_NAMES
+            or name.startswith((".prettierrc", "eslint.config.", "jest.config.", "vitest.config."))
+        )
+
+    def _readme_commands(self, readme_paths: list[str]) -> list[dict[str, str]]:
+        command_pattern = re.compile(
+            r"^\s*(?:python(?:3)?\s|pytest(?:\s|$)|npm\s|pnpm\s|"
+            r"yarn\s|uv\s|poetry\s|cargo\s|go\s|make(?:\s|$))",
+            re.IGNORECASE,
+        )
+        commands = []
+        for path in readme_paths:
+            try:
+                content = cast(str, self.inspect_file(path)["content"])
+            except AgentToolError:
+                continue
+            found = [
+                line.strip()[:300]
+                for line in content.splitlines()
+                if command_pattern.match(line)
+            ]
+            if found:
+                commands.append({
+                    "path": path[:160],
+                    "commands": " | ".join(found[:3]),
+                })
+        return commands[:2]
 
     def list_project_files(self) -> list[str]:
+        if self._project_file_paths is not None:
+            return list(self._project_file_paths)
         files = (
             self.db.query(ProjectFile)
             .filter(
@@ -114,7 +501,8 @@ class AgentTools:
             path = self.get_file_path(project_file)
             if self.is_safe_path(path):
                 result.append(path)
-        return result
+        self._project_file_paths = result
+        return list(result)
 
     def list_project_entries(self, directory: str = "") -> list[dict[str, str]]:
         normalized_directory = ""
@@ -335,18 +723,6 @@ class AgentTools:
             max_files=6,
         ).build_context(query=query)
         context_sections = []
-        context_size = 0
-        for result in relevance.search_results:
-            if (
-                not self.is_safe_path(result.path)
-                or self.contains_sensitive_content(result.content)
-            ):
-                continue
-            section = f"FILE: {result.path}\n{result.content[:6000]}"
-            if context_size + len(section) > 20000:
-                break
-            context_sections.append(section)
-            context_size += len(section)
         vector_result = VectorRAGService(
             db=self.db,
             project_id=self.project_id,
@@ -357,6 +733,7 @@ class AgentTools:
         )
         vector_sections = []
         vector_size = 0
+        vector_paths: set[str] = set()
         for chunk in vector_result.chunks:
             if (
                 not self.is_safe_path(chunk.file_path)
@@ -370,8 +747,22 @@ class AgentTools:
             if vector_size + len(section) > 20000:
                 break
             vector_sections.append(section)
+            vector_paths.add(chunk.file_path)
             vector_size += len(section)
-        return "\n\n".join(vector_sections or context_sections)[:20000]
+        for result in relevance.search_results:
+            if result.path in vector_paths:
+                continue
+            if (
+                not self.is_safe_path(result.path)
+                or self.contains_sensitive_content(result.content)
+            ):
+                continue
+            section = f"FILE: {result.path}\n{result.content[:6000]}"
+            if vector_size + len(section) > 20000:
+                break
+            context_sections.append(section)
+            vector_size += len(section)
+        return "\n\n".join([*vector_sections, *context_sections])[:20000]
 
     def resolve_file(self, file_path: str) -> ProjectFile:
         path = self._validate_path(file_path)
