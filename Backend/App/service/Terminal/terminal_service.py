@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path, PureWindowsPath
 
+from App.config import IDE_WORKSPACES_ROOT
 from App.service.Terminal.terminal_security import (
     parse_terminal_command,
 )
@@ -23,8 +24,10 @@ class TerminalResult:
 class TerminalService:
     """Serve a bounded set of read-only commands inside project workspaces."""
 
-    def __init__(self, workspace_root: str = "workspaces"):
-        self.workspace_root = Path(workspace_root).resolve()
+    def __init__(self, workspace_root: str | None = None):
+        self.workspace_root = Path(
+            workspace_root or IDE_WORKSPACES_ROOT
+        ).resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     def get_project_directory(self, project_id: int) -> Path:

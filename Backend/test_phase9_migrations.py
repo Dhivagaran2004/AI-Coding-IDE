@@ -68,7 +68,11 @@ def test_migrations_upgrade_fresh_database(tmp_path):
         } <= tables
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20261004_05"
+        ).fetchone()[0] == "20261123_07"
+        assert "workspace_path" in {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(projects)")
+        }
         assert "error_message" in {
             row[1]
             for row in connection.execute("PRAGMA table_info(repository_indexes)")
@@ -132,7 +136,7 @@ def test_migrations_preserve_existing_application_data(tmp_path):
         ).fetchone()[0] == "Existing conversation"
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20261004_05"
+        ).fetchone()[0] == "20261123_07"
 
 
 def test_latest_migration_repairs_missing_repository_index_error_column(tmp_path):
@@ -174,4 +178,4 @@ def test_latest_migration_repairs_missing_repository_index_error_column(tmp_path
         assert "error_message" in columns
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20261004_05"
+        ).fetchone()[0] == "20261123_07"

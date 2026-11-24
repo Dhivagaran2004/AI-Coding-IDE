@@ -2,6 +2,7 @@ import {
     useEffect,
     useState,
     useRef,
+    useCallback,
     type FormEvent,
 } from "react";
 
@@ -60,6 +61,7 @@ import type {
 
 import AIChat, { type AIChatHandle } from "../components/ai/AIChat";
 import type { TerminalAIContext } from "../services/terminalService";
+import type { WorkspaceFileChange } from "../services/terminalService";
 import type { CodeAction } from "../services/aiService";
 import { getGitDiff, getGitStatus, type GitStatus } from "../services/gitService";
 
@@ -76,6 +78,8 @@ interface EditorTab {
     language: string;
 
     isDirty: boolean;
+
+    savedContent?: string;
 }
 
 type NameDialog =
@@ -130,6 +134,10 @@ export default function IDEPage() {
     ] = useState<number | null>(
         null
     );
+    const tabsRef = useRef(tabs);
+    useEffect(() => {
+        tabsRef.current = tabs;
+    }, [tabs]);
 
     const [selectedCode, setSelectedCode] = useState<{
         code: string;
@@ -149,6 +157,7 @@ export default function IDEPage() {
     const [activeSidebar, setActiveSidebar] =
         useState<IDEActivityView | null>("explorer");
     const [isTerminalVisible, setIsTerminalVisible] = useState(true);
+    const [isTerminalMaximized, setIsTerminalMaximized] = useState(false);
     const [isChatVisible, setIsChatVisible] = useState(true);
     const [isShortcutHelpOpen, setIsShortcutHelpOpen] = useState(false);
     const [tabContextMenu, setTabContextMenu] =
@@ -519,6 +528,8 @@ export default function IDEPage() {
                 content:
                     selected.content ?? "",
 
+                savedContent: selected.content ?? "",
+
                 language:
                     getLanguageFromFileName(
                         selected.name
@@ -876,6 +887,7 @@ export default function IDEPage() {
             const updatedTab: EditorTab = {
                 file: targetFile,
                 content: updatedFile.content ?? "",
+                savedContent: updatedFile.content ?? "",
                 language: existingTab?.language ?? getLanguageFromFileName(targetFile.name),
                 isDirty: false,
             };
@@ -927,6 +939,7 @@ export default function IDEPage() {
                         path: change.path,
                     },
                     content: change.content,
+                    savedContent: change.content,
                     language: existingTab?.language ?? getLanguageFromFileName(name),
                     isDirty: false,
                 };
@@ -954,6 +967,64 @@ export default function IDEPage() {
         setRefreshKey((current) => current + 1);
         setSaveError("");
     }
+
+    const handleWorkspaceChanges = useCallback(
+        (changes: WorkspaceFileChange[]) => {
+            if (changes.length === 0) return;
+            const changesById = new Map<number, WorkspaceFileChange>();
+            for (const change of changes) {
+                if (change.file_id !== undefined) {
+                    changesById.set(change.file_id, change);
+                }
+            }
+            const hasDirtyConflict = tabsRef.current.some((tab) =>
+                tab.isDirty && changesById.has(tab.file.id),
+            );
+            const removedIds = new Set(
+                changes
+                    .filter((change) =>
+                        change.deleted &&
+                        change.file_id !== undefined &&
+                        !tabsRef.current.some(
+                            (tab) => tab.file.id === change.file_id && tab.isDirty,
+                        ),
+                    )
+                    .map((change) => change.file_id)
+                    .filter((id): id is number => id !== undefined),
+            );
+
+            setTabs((currentTabs) => currentTabs.flatMap((tab) => {
+                const change = changesById.get(tab.file.id);
+                if (!change) return [tab];
+                if (change.deleted) {
+                    return tab.isDirty ? [tab] : [];
+                }
+                if (tab.isDirty || change.content === undefined) {
+                    return [tab];
+                }
+                const name = change.path.split("/").pop() ?? change.path;
+                return [{
+                    ...tab,
+                    file: { ...tab.file, name, path: change.path },
+                    content: change.content,
+                    savedContent: change.content,
+                    language: getLanguageFromFileName(name),
+                    isDirty: false,
+                }];
+            }));
+            setActiveTabId((currentId) => {
+                if (currentId === null || !removedIds.has(currentId)) return currentId;
+                return tabsRef.current.find((tab) => !removedIds.has(tab.file.id))?.file.id ?? null;
+            });
+            if (hasDirtyConflict) {
+                setSaveError(
+                    "A workspace change conflicts with unsaved editor content. Your buffer was preserved; reload or copy it before saving.",
+                );
+            }
+            setRefreshKey((current) => current + 1);
+        },
+        [],
+    );
 
     async function saveFile() {
 
@@ -1041,6 +1112,7 @@ export default function IDEPage() {
                     {
                         content:
                             contentToSave,
+                        expected_content: activeTab.savedContent,
                     }
                 );
 
@@ -1072,6 +1144,7 @@ export default function IDEPage() {
                                 ...tab,
 
                                 isDirty: tab.content !== contentToSave,
+                                savedContent: contentToSave,
 
                             };
 
@@ -2645,6 +2718,7 @@ export default function IDEPage() {
                                 ? "is-active"
                                 : ""
                                 }`}
+                            style={{ display: isTerminalMaximized ? "none" : undefined }}
                             onMouseDown={event => {
                                 event.preventDefault();
                                 setActiveResizer(
@@ -2667,7 +2741,7 @@ export default function IDEPage() {
                         {/* ================================= */}
 
                         <section
-                            className="ide-terminal"
+                            className={`ide-terminal${isTerminalMaximized ? " is-maximized" : ""}`}
                             style={{
                                 height: `${terminalHeight}px`,
                                 flexBasis: `${terminalHeight}px`,
@@ -2682,6 +2756,12 @@ export default function IDEPage() {
                                 }
                                 onResultChange={setTerminalContext}
                                 onAskAI={() => aiChatRef.current?.askAboutTerminal()}
+                                onWorkspaceChange={handleWorkspaceChanges}
+                                onMinimize={() => setIsTerminalVisible(false)}
+                                onToggleMaximize={() =>
+                                    setIsTerminalMaximized((maximized) => !maximized)
+                                }
+                                isMaximized={isTerminalMaximized}
                             />
 
                         </section>

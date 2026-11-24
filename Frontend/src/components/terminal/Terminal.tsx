@@ -9,7 +9,9 @@ import {
 import {
     executeTerminalCommand,
     type TerminalAIContext,
+    type WorkspaceFileChange,
 } from "../../services/terminalService";
+import InteractiveTerminal from "./InteractiveTerminal";
 
 
 // =========================================
@@ -20,6 +22,10 @@ interface TerminalProps {
     projectId: number;
     onResultChange?: (result: TerminalAIContext | null) => void;
     onAskAI?: () => void;
+    onMinimize: () => void;
+    onToggleMaximize: () => void;
+    isMaximized: boolean;
+    onWorkspaceChange: (changes: WorkspaceFileChange[]) => void;
 }
 
 export interface TerminalHandle {
@@ -101,7 +107,7 @@ function getErrorMessage(
 // Terminal Component
 // =========================================
 
-const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal({
+const LegacyTerminal = forwardRef<TerminalHandle, TerminalProps>(function LegacyTerminal({
     projectId,
     onResultChange,
     onAskAI,
@@ -625,6 +631,23 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal({
 
         </div>
     );
+});
+
+const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(props, ref) {
+    if (import.meta.env.VITE_ENABLE_INTERACTIVE_TERMINAL !== "false") {
+        return (
+            <InteractiveTerminal
+                ref={ref}
+                projectId={props.projectId}
+                onMinimize={props.onMinimize}
+                onToggleMaximize={props.onToggleMaximize}
+                isMaximized={props.isMaximized}
+                onWorkspaceChange={props.onWorkspaceChange}
+            />
+        );
+    }
+
+    return <LegacyTerminal {...props} ref={ref} />;
 });
 
 export default Terminal;

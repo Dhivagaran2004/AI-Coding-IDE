@@ -1542,25 +1542,11 @@ textarea:focus-visible {
 
     border-bottom: 1px solid #2d2d2d;
 
-    scrollbar-width: thin;
+    scrollbar-width: none;
 }
 
 .editor-tabs::-webkit-scrollbar {
-    height: 5px;
-}
-
-.editor-tabs::-webkit-scrollbar-track {
-    background: #181818;
-}
-
-.editor-tabs::-webkit-scrollbar-thumb {
-    background: #424242;
-
-    border-radius: 3px;
-}
-
-.editor-tabs::-webkit-scrollbar-thumb:hover {
-    background: #555555;
+    display: none;
 }
 
 
@@ -1969,6 +1955,221 @@ textarea:focus-visible {
     background: #0d0d0d;
 
     border-top: none;
+}
+
+.interactive-terminal {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    color: #cccccc;
+    background: #1e1e1e;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.interactive-terminal-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex: 0 0 36px;
+    min-width: 0;
+    height: 36px;
+    padding: 0 8px;
+    color: #cccccc;
+    background: #181818;
+    border-bottom: 1px solid #333333;
+}
+
+.interactive-terminal-heading,
+.interactive-terminal-panel-tabs,
+.interactive-terminal-tabs,
+.interactive-terminal-actions {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.interactive-terminal-heading {
+    align-self: stretch;
+    gap: 14px;
+    overflow: hidden;
+}
+
+.interactive-terminal-panel-tabs {
+    align-self: stretch;
+    flex: 0 0 auto;
+}
+
+.interactive-terminal-title {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0 8px;
+    border-bottom: 1px solid #007acc;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.interactive-terminal-tabs {
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.interactive-terminal-tab {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: 28px;
+    border-radius: 3px;
+    background: transparent;
+}
+
+.interactive-terminal-tab.is-active {
+    background: #252526;
+}
+
+.interactive-terminal-tab button,
+.interactive-terminal-actions button,
+.interactive-terminal-actions select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 26px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 3px;
+    color: #cccccc;
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+}
+
+.interactive-terminal-tab button {
+    height: 26px;
+    cursor: pointer;
+}
+
+.interactive-terminal-tab button:hover,
+.interactive-terminal-actions button:hover:not(:disabled) {
+    color: #ffffff;
+    background: #333333;
+}
+
+.interactive-terminal-tab .interactive-terminal-tab-close {
+    width: 22px;
+    padding: 0;
+}
+
+.interactive-terminal-actions {
+    flex: 0 0 auto;
+    gap: 3px;
+}
+
+.interactive-terminal-actions .interactive-terminal-shell {
+    width: 138px;
+    min-height: 26px;
+    padding: 0 7px;
+    border: 1px solid #3c3c3c;
+    color: #cccccc;
+    background: #252526;
+    color-scheme: dark;
+    cursor: pointer;
+}
+
+.interactive-terminal-actions .interactive-terminal-icon-button {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    color: #cccccc;
+    cursor: pointer;
+}
+
+.interactive-terminal-actions .interactive-terminal-icon-button:disabled {
+    color: #666666;
+    cursor: default;
+}
+
+.interactive-terminal-action-divider {
+    width: 1px;
+    height: 16px;
+    margin: 0 3px;
+    background: #3c3c3c;
+}
+
+.interactive-terminal-content {
+    position: relative;
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: #1e1e1e;
+}
+
+.interactive-terminal-screen {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    padding: 6px 0 0 8px;
+    outline: none;
+}
+
+.interactive-terminal-screen .xterm {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+}
+
+.interactive-terminal-screen .xterm-viewport {
+    overflow-y: auto !important;
+}
+
+.interactive-terminal-error {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-bottom: 1px solid #5a2b2b;
+    color: #f48771;
+    background: #351f1f;
+    font-size: 12px;
+}
+
+.interactive-terminal-empty {
+    padding: 16px;
+    color: #858585;
+    font-size: 13px;
+}
+
+@media (max-width: 650px) {
+    .interactive-terminal-toolbar {
+        gap: 4px;
+        padding: 0 5px;
+    }
+
+    .interactive-terminal-heading {
+        gap: 6px;
+    }
+
+    .interactive-terminal-title {
+        padding: 0 5px;
+    }
+
+    .interactive-terminal-actions .interactive-terminal-shell {
+        width: 112px;
+    }
+
+    .interactive-terminal-actions .interactive-terminal-icon-button[aria-label="Rename terminal"] {
+        display: none;
+    }
 }
 
 

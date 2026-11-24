@@ -32,4 +32,5 @@ export interface ProjectFileCreate {
 export interface ProjectFileUpdate {
     name?: string;
     content?: string;
+    expected_content?: string;
 }

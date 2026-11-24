@@ -9,6 +9,8 @@ from pathlib import Path
 from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath, PureWindowsPath
 
+from App.config import IDE_WORKSPACES_ROOT
+
 
 @dataclass
 class SandboxExecutionResult:
@@ -34,12 +36,14 @@ class SandboxService:
 
     def __init__(
         self,
-        workspace_root: str = "workspaces",
+        workspace_root: str | None = None,
         sandbox_root: str | None = None,
         docker_image: str = DEFAULT_DOCKER_IMAGE,
         docker_binary: str = "docker",
     ):
-        self.workspace_root = Path(workspace_root).resolve()
+        self.workspace_root = Path(
+            workspace_root or IDE_WORKSPACES_ROOT
+        ).resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
         if sandbox_root is None:

@@ -1,3 +1,6 @@
+import pytest
+from fastapi import HTTPException
+
 from App.models.project import Project
 from App.models.project_file import ProjectFile
 from App.routes import project_file as project_file_router
@@ -10,6 +13,7 @@ from App.schema.project_file_schema import (
 class FakeProject:
     id = 1
     user_id = 1
+    workspace_path = None
 
 
 class FakeUser:
@@ -73,6 +77,16 @@ def test_created_files_are_indexed(monkeypatch):
         "RepositoryIndexService",
         FakeIndexService,
     )
+    monkeypatch.setattr(
+        project_file_router,
+        "_sync_workspace_file",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        project_file_router,
+        "_assert_workspace_file_matches",
+        lambda *args, **kwargs: None,
+    )
     db = FakeDB()
 
     result = project_file_router.create_file_or_folder(
@@ -97,6 +111,16 @@ def test_updated_file_content_is_reindexed(monkeypatch):
         "RepositoryIndexService",
         FakeIndexService,
     )
+    monkeypatch.setattr(
+        project_file_router,
+        "_sync_workspace_file",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        project_file_router,
+        "_assert_workspace_file_matches",
+        lambda *args, **kwargs: None,
+    )
     file = ProjectFile(
         id=10,
         project_id=1,
@@ -116,3 +140,29 @@ def test_updated_file_content_is_reindexed(monkeypatch):
 
     assert result.content == "print('new')"
     assert FakeIndexService.calls == [(1, 10, "print('new')")]
+
+
+def test_stale_editor_content_is_rejected_before_update():
+    file = ProjectFile(
+        id=10,
+        project_id=1,
+        name="main.py",
+        type="file",
+        content="print('terminal edit')",
+    )
+    db = FakeDB(file=file)
+
+    with pytest.raises(HTTPException) as error:
+        project_file_router.update_project_file(
+            project_id=1,
+            file_id=10,
+            file_data=ProjectFileUpdate(
+                content="print('stale editor buffer')",
+                expected_content="print('old editor buffer')",
+            ),
+            db=db,
+            current_user=FakeUser(),
+        )
+
+    assert error.value.status_code == 409
+    assert file.content == "print('terminal edit')"

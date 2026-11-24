@@ -1,4 +1,6 @@
+import errno
 import os
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -12,6 +14,11 @@ from App.service.AI.index.code_chunker import CodeChunker
 from App.service.AI.index.repository_index_service import RepositoryIndexService
 from App.service.AI.index.vector_rag_service import VectorRAGService
 from App.service.sandbox_service import SandboxExecutionResult, SandboxService
+from App.service.workspace_paths import (
+    WorkspacePathError,
+    ensure_project_workspace,
+)
+from App.config import IDE_WORKSPACES_ROOT
 
 
 MAX_SANDBOX_PROJECT_FILES = 1000
@@ -19,6 +26,10 @@ MAX_SANDBOX_PROJECT_BYTES = 50_000_000
 
 
 class ProjectWorkspaceSyncError(RuntimeError):
+    pass
+
+
+class ProjectWorkspaceConflictError(ProjectWorkspaceSyncError):
     pass
 
 
@@ -47,6 +58,38 @@ class ProjectWorkspaceService:
         )
         if project is None:
             raise ProjectWorkspaceSyncError("Project not found.")
+
+        workspace_path = project.workspace_path
+        legacy_roots = (
+            None
+            if self.sandbox.workspace_root == IDE_WORKSPACES_ROOT
+            else ()
+        )
+        try:
+            ensure_project_workspace(
+                project,
+                workspace_root=self.sandbox.workspace_root,
+                legacy_roots=legacy_roots,
+            )
+        except WorkspacePathError as error:
+            raise ProjectWorkspaceSyncError(str(error)) from error
+        if project.workspace_path != workspace_path:
+            self.db.commit()
+
+        workspace_change_module = sys.modules.get(
+            "App.service.workspace_change_service"
+        )
+        if (
+            workspace_change_module is not None
+            and workspace_change_module.workspace_change_manager.is_watching(
+                project_id
+            )
+        ):
+            workspace_change_module.WorkspaceChangeService(
+                self.db,
+                sandbox_service=self.sandbox,
+                change_manager=workspace_change_module.workspace_change_manager,
+            ).sync_pending(project_id, user_id)
 
         files = (
             self.db.query(ProjectFile)
@@ -105,6 +148,9 @@ class ProjectWorkspaceService:
         user_id: int,
         file_path: str,
         content: str | None,
+        *,
+        expected_content: str | None = None,
+        check_expected: bool = False,
     ) -> None:
         project = (
             self.db.query(Project)
@@ -113,6 +159,22 @@ class ProjectWorkspaceService:
         )
         if project is None:
             raise ProjectWorkspaceSyncError("Project not found.")
+        workspace_path = project.workspace_path
+        legacy_roots = (
+            None
+            if self.sandbox.workspace_root == IDE_WORKSPACES_ROOT
+            else ()
+        )
+        try:
+            ensure_project_workspace(
+                project,
+                workspace_root=self.sandbox.workspace_root,
+                legacy_roots=legacy_roots,
+            )
+        except WorkspacePathError as error:
+            raise ProjectWorkspaceSyncError(str(error)) from error
+        if project.workspace_path != workspace_path:
+            self.db.commit()
         relative_path = self._validate_relative_path(file_path)
         if relative_path != file_path or not AgentTools.is_safe_path(relative_path):
             raise ProjectWorkspaceSyncError("Invalid or protected project file path.")
@@ -135,6 +197,17 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceSyncError(
                 "Workspace synchronization cannot follow symbolic links."
             )
+        if check_expected:
+            if expected_content is None and target.exists():
+                raise ProjectWorkspaceConflictError(
+                    "A workspace file already exists at the requested path."
+                )
+            if expected_content is not None and target.exists():
+                current = self._read_workspace_text(target, relative_path)
+                if current != expected_content:
+                    raise ProjectWorkspaceConflictError(
+                        f"Workspace file {relative_path} changed before synchronization."
+                    )
         if content is None:
             if target.exists() and not target.is_file():
                 raise ProjectWorkspaceSyncError(
@@ -148,6 +221,159 @@ class ProjectWorkspaceService:
                 "Workspace synchronization target is not a regular file."
             )
         self._write_workspace_file(target, content.encode("utf-8"))
+
+    def assert_workspace_file_matches(
+        self,
+        project_id: int,
+        user_id: int,
+        file_path: str,
+        expected_content: str | None,
+        *,
+        expect_absent: bool = False,
+    ) -> None:
+        project = (
+            self.db.query(Project)
+            .filter(Project.id == project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            raise ProjectWorkspaceSyncError("Project not found.")
+        previous_path = project.workspace_path
+        try:
+            ensure_project_workspace(
+                project,
+                workspace_root=self.sandbox.workspace_root,
+                legacy_roots=(
+                    None
+                    if self.sandbox.workspace_root == IDE_WORKSPACES_ROOT
+                    else ()
+                ),
+            )
+        except WorkspacePathError as error:
+            raise ProjectWorkspaceSyncError(str(error)) from error
+        if project.workspace_path != previous_path:
+            self.db.commit()
+
+        relative_path = self._validate_relative_path(file_path)
+        if relative_path != file_path or not AgentTools.is_safe_path(relative_path):
+            raise ProjectWorkspaceSyncError("Invalid or protected project file path.")
+        project_directory = self.sandbox.get_project_directory(project_id)
+        target = project_directory.joinpath(*PurePosixPath(relative_path).parts)
+        self._ensure_contained(target, project_directory)
+        for parent in target.parents:
+            if parent == project_directory.parent:
+                break
+            if parent.is_symlink():
+                raise ProjectWorkspaceSyncError(
+                    "Workspace synchronization cannot follow symbolic links."
+                )
+        if target.is_symlink():
+            raise ProjectWorkspaceSyncError(
+                "Workspace synchronization cannot follow symbolic links."
+            )
+        if target.exists():
+            if expect_absent:
+                raise ProjectWorkspaceConflictError(
+                    f"A workspace file already exists at {relative_path}."
+                )
+            if not target.is_file():
+                raise ProjectWorkspaceSyncError(
+                    "Workspace synchronization target is not a regular file."
+                )
+            current = self._read_workspace_text(target, relative_path)
+            if current != expected_content:
+                raise ProjectWorkspaceConflictError(
+                    f"Workspace file {relative_path} changed outside the editor."
+                )
+
+    @staticmethod
+    def _read_workspace_text(target: Path, relative_path: str) -> str:
+        if target.stat().st_size > 1_000_000:
+            raise ProjectWorkspaceSyncError(
+                f"Workspace file {relative_path} cannot be safely synchronized."
+            )
+        content = target.read_bytes()
+        if len(content) > 1_000_000 or b"\0" in content:
+            raise ProjectWorkspaceSyncError(
+                f"Workspace file {relative_path} cannot be safely synchronized."
+            )
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ProjectWorkspaceSyncError(
+                f"Workspace file {relative_path} is not UTF-8 text."
+            ) from error
+
+    def sync_folder(
+        self,
+        project_id: int,
+        user_id: int,
+        folder_path: str,
+        *,
+        delete: bool = False,
+    ) -> None:
+        project = (
+            self.db.query(Project)
+            .filter(Project.id == project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            raise ProjectWorkspaceSyncError("Project not found.")
+        previous_path = project.workspace_path
+        try:
+            ensure_project_workspace(
+                project,
+                workspace_root=self.sandbox.workspace_root,
+                legacy_roots=(
+                    None
+                    if self.sandbox.workspace_root == IDE_WORKSPACES_ROOT
+                    else ()
+                ),
+            )
+        except WorkspacePathError as error:
+            raise ProjectWorkspaceSyncError(str(error)) from error
+        if project.workspace_path != previous_path:
+            self.db.commit()
+
+        relative_path = self._validate_relative_path(folder_path)
+        if relative_path != folder_path or not AgentTools.is_safe_path(relative_path):
+            raise ProjectWorkspaceSyncError("Invalid or protected project folder path.")
+        project_directory = self.sandbox.get_project_directory(project_id)
+        target = project_directory.joinpath(*PurePosixPath(relative_path).parts)
+        self._ensure_contained(target, project_directory)
+        for parent in target.parents:
+            if parent == project_directory.parent:
+                break
+            if parent.is_symlink():
+                raise ProjectWorkspaceSyncError(
+                    "Workspace synchronization cannot follow symbolic links."
+                )
+        if target.is_symlink():
+            raise ProjectWorkspaceSyncError(
+                "Workspace synchronization cannot follow symbolic links."
+            )
+        if delete:
+            if target.exists() and not target.is_dir():
+                raise ProjectWorkspaceSyncError(
+                    "Workspace folder deletion target is not a directory."
+                )
+            if target.exists():
+                try:
+                    target.rmdir()
+                except OSError as error:
+                    if (
+                        error.errno not in {errno.ENOTEMPTY, errno.EEXIST}
+                        and getattr(error, "winerror", None) not in {145, 183}
+                    ):
+                        raise ProjectWorkspaceSyncError(
+                            "Unable to remove the empty workspace folder."
+                        ) from error
+            return
+        if target.exists() and not target.is_dir():
+            raise ProjectWorkspaceSyncError(
+                "Workspace synchronization target is not a directory."
+            )
+        target.mkdir(parents=True, exist_ok=True)
 
     def _persist_changes(
         self,

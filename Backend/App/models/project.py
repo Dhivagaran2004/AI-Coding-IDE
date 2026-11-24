@@ -40,6 +40,13 @@ class Project(Base):
         nullable=False
     )
 
+    workspace_path = Column(
+        String(2000),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
     user = relationship(
         "User",
         back_populates="projects"

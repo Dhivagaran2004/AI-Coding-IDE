@@ -10,6 +10,10 @@ from App.schema.project_Schema import (
     ProjectResponse
 )
 from App.auth.auth import get_current_user
+from App.service.workspace_paths import (
+    WorkspacePathError,
+    ensure_project_workspace,
+)
 
 
 router = APIRouter(
@@ -40,8 +44,17 @@ def create_project(
     )
 
     db.add(new_project)
-    db.commit()
-    db.refresh(new_project)
+    db.flush()
+    try:
+        ensure_project_workspace(new_project)
+        db.commit()
+        db.refresh(new_project)
+    except WorkspacePathError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Project workspace could not be initialized.",
+        ) from error
 
     return new_project
 

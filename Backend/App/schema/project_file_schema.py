@@ -21,6 +21,7 @@ class ProjectFileUpdate(BaseModel):
     content: Optional[str] = None
     language: Optional[str] = None
     parent_id: Optional[int] = None
+    expected_content: Optional[str] = None
 
 
 class ProjectFileResponse(ProjectFileBase):

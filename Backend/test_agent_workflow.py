@@ -88,8 +88,13 @@ def agent_db():
 
 
 @pytest.fixture(autouse=True)
-def disable_implicit_docker_runs_in_unit_tests(monkeypatch):
+def disable_implicit_docker_runs_in_unit_tests(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_router.sandbox_service, "is_available", lambda: False)
+    monkeypatch.setattr(
+        agent_router.sandbox_service,
+        "workspace_root",
+        tmp_path / "workspaces",
+    )
 
 
 @pytest.fixture(autouse=True)

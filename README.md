@@ -15,6 +15,27 @@ The migration configuration reads the backend environment (including
 conversation/message and agent-task tables; user and project tables must
 already exist.
 
+## External workspaces and interactive terminals
+
+Project directories are created outside the IDE source tree. Set
+`IDE_WORKSPACES_ROOT` in the backend environment to choose the external root;
+when unset, it defaults to a sibling directory named
+`AI-Coding-IDE-Workspaces`. Run `python -m alembic upgrade head` before starting
+the updated backend so projects can store their canonical workspace path.
+
+Existing `Backend/workspaces/<project_id>` directories are migrated lazily the
+first time their project workspace is opened. A conflicting external directory
+is never overwritten; the operation reports a conflict for manual resolution.
+
+The interactive terminal is enabled by default. From `Backend`, install its
+optional dependencies with
+`python -m pip install -r requirements.txt -r requirements-terminal.txt`, then
+restart the backend and frontend. Set `ENABLE_INTERACTIVE_TERMINAL=false` or
+`VITE_ENABLE_INTERACTIVE_TERMINAL=false` only to opt back into the legacy
+command terminal. Windows uses pywinpty; Linux uses the native PTY
+implementation. Terminal sessions are host processes running with the backend
+user's permissions, not inside Docker; agent validation remains Docker-only.
+
 ## Persistent AI and Git APIs
 
 - `POST /ai/chat` remains the regular JSON chat endpoint.

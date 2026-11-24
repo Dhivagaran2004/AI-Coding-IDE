@@ -37,7 +37,13 @@ class FakeDB:
         return FakeQuery(self.project)
 
 
-def make_client(tmp_path, monkeypatch, project=FakeProject()):
+_DEFAULT_PROJECT = object()
+
+
+def make_client(tmp_path, monkeypatch, project=_DEFAULT_PROJECT):
+    if project is _DEFAULT_PROJECT:
+        project = FakeProject()
+
     app = FastAPI()
 
     async def override_db():

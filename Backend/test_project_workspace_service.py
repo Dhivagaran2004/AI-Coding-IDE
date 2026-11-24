@@ -11,9 +11,14 @@ from App.models.project import Project
 from App.models.project_file import ProjectFile
 from App.models.user import User
 from App.service import project_workspace_service
+from App.service import workspace_change_service
 from App.service.project_workspace_service import (
     ProjectWorkspaceService,
     ProjectWorkspaceSyncError,
+)
+from App.service.workspace_change_service import (
+    WorkspaceChange,
+    WorkspaceChangeService,
 )
 from App.service.sandbox_service import SandboxService
 
@@ -115,7 +120,7 @@ def disable_index_side_effects(monkeypatch):
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def index_file_after_save(self, _file):
+        def index_file_after_save(self, _file, **_kwargs):
             pass
 
     class NoopVectorService:
@@ -132,6 +137,16 @@ def disable_index_side_effects(monkeypatch):
     )
     monkeypatch.setattr(
         project_workspace_service,
+        "VectorRAGService",
+        NoopVectorService,
+    )
+    monkeypatch.setattr(
+        workspace_change_service,
+        "RepositoryIndexService",
+        NoopRepositoryIndexer,
+    )
+    monkeypatch.setattr(
+        workspace_change_service,
         "VectorRAGService",
         NoopVectorService,
     )
@@ -195,6 +210,90 @@ def test_snapshot_execution_persists_changes_to_database_and_workspace(
     )
     assert not (project_directory / "src" / "old.py").exists()
     assert (project_directory / "src" / "new.py").is_file()
+
+
+def test_terminal_workspace_changes_are_imported_incrementally(
+    workspace_db,
+    tmp_path,
+    monkeypatch,
+):
+    disable_index_side_effects(monkeypatch)
+    sandbox = make_sandbox(tmp_path)
+    project_directory = sandbox.get_project_directory(1)
+    (project_directory / "main.py").write_bytes(
+        b"print('terminal edit')\n"
+    )
+    (project_directory / "src" / "new.py").write_bytes(
+        b"print('terminal create')\n"
+    )
+    (project_directory / "src" / "old.py").unlink()
+
+    class PendingChanges:
+        def watch(self, _project_id, _workspace):
+            pass
+
+        def drain(self, _project_id):
+            return [
+                WorkspaceChange(1, "main.py", "modified", False),
+                WorkspaceChange(1, "src/new.py", "created", False),
+                WorkspaceChange(1, "src/old.py", "deleted", False),
+            ]
+
+    result = WorkspaceChangeService(
+        workspace_db,
+        sandbox_service=sandbox,
+        change_manager=PendingChanges(),
+    ).sync_pending(project_id=1, user_id=1)
+
+    assert {change["path"] for change in result["changes"]} == {
+        "main.py",
+        "src/new.py",
+        "src/old.py",
+    }
+    assert workspace_db.get(ProjectFile, 11).content == "print('terminal edit')\n"
+    assert workspace_db.get(ProjectFile, 14) is None
+    new_file = (
+        workspace_db.query(ProjectFile)
+        .filter(
+            ProjectFile.project_id == 1,
+            ProjectFile.parent_id == 13,
+            ProjectFile.name == "new.py",
+        )
+        .one()
+    )
+    assert new_file.content == "print('terminal create')\n"
+
+
+def test_terminal_directory_deletion_removes_its_database_subtree(
+    workspace_db,
+    tmp_path,
+    monkeypatch,
+):
+    disable_index_side_effects(monkeypatch)
+    sandbox = make_sandbox(tmp_path)
+    project_directory = sandbox.get_project_directory(1)
+    (project_directory / "src" / "old.py").unlink()
+    (project_directory / "src").rmdir()
+
+    class PendingChanges:
+        def watch(self, _project_id, _workspace):
+            pass
+
+        def drain(self, _project_id):
+            return [WorkspaceChange(1, "src", "deleted", True)]
+
+    result = WorkspaceChangeService(
+        workspace_db,
+        sandbox_service=sandbox,
+        change_manager=PendingChanges(),
+    ).sync_pending(project_id=1, user_id=1)
+
+    assert workspace_db.get(ProjectFile, 13) is None
+    assert workspace_db.get(ProjectFile, 14) is None
+    assert any(
+        change.get("deleted") is True and change["path"] == "src/old.py"
+        for change in result["changes"]
+    )
 
 
 def test_approved_file_sync_updates_and_deletes_workspace_mirror(

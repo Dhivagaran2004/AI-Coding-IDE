@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi import Depends, HTTPException
 from sqlalchemy import text
@@ -15,7 +17,11 @@ from App.routes.User import router as user_router
 from App.routes.project import router as project_router
 from App.routes.project_file import router as project_file_router
 from fastapi.middleware.cors import CORSMiddleware
-from App.api.terminal_router import router as terminal_router
+from App.api.terminal_router import (
+    router as terminal_router,
+    terminal_session_manager,
+    stop_workspace_change_monitor,
+)
 from App.api.ai_router import ai_service, router as ai_router
 from App.api.file_search_router import router as file_search_router
 from App.api.repository_index_router import router as repository_index_router
@@ -56,6 +62,29 @@ app.include_router(agent_router)
 app.include_router(conversation_router)
 app.include_router(git_router)
 app.include_router(sandbox_router)
+
+
+_terminal_cleanup_task: asyncio.Task[None] | None = None
+
+
+@app.on_event("startup")
+async def start_terminal_session_cleanup() -> None:
+    global _terminal_cleanup_task
+    _terminal_cleanup_task = asyncio.create_task(
+        terminal_session_manager.cleanup_loop()
+    )
+
+
+@app.on_event("shutdown")
+async def stop_terminal_sessions() -> None:
+    if _terminal_cleanup_task is not None:
+        _terminal_cleanup_task.cancel()
+        await asyncio.gather(
+            _terminal_cleanup_task,
+            return_exceptions=True,
+        )
+    await terminal_session_manager.close_all()
+    stop_workspace_change_monitor()
 
 @app.get("/")
 def home():

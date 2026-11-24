@@ -17,6 +17,11 @@ from App.service.AI.index.repository_index_service import (
     RepositoryIndexService,
 )
 from App.service.AI.index.vector_rag_service import VectorRAGService
+from App.service.project_workspace_service import (
+    ProjectWorkspaceConflictError,
+    ProjectWorkspaceService,
+    ProjectWorkspaceSyncError,
+)
 
 from App.schema.project_file_schema import (
     ProjectFileCreate,
@@ -94,6 +99,41 @@ def get_project_file(
         )
 
     return project_file
+
+
+def _project_file_path(db: Session, project_file: ProjectFile) -> str:
+    return ProjectWorkspaceService(db)._get_project_path(project_file)
+
+
+def _sync_workspace_file(
+    db: Session,
+    project_id: int,
+    user_id: int,
+    file_path: str,
+    content: str | None,
+    *,
+    expected_content: str | None = None,
+    check_expected: bool = False,
+) -> None:
+    try:
+        ProjectWorkspaceService(db).sync_file(
+            project_id=project_id,
+            user_id=user_id,
+            file_path=file_path,
+            content=content,
+            expected_content=expected_content,
+            check_expected=check_expected,
+        )
+    except ProjectWorkspaceConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except ProjectWorkspaceSyncError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Project file changed in the database but workspace sync failed: {error}",
+        ) from error
 #===============================================================
 
 def validate_parent(
@@ -305,6 +345,24 @@ def create_file_or_folder(
             content=file_data.content or "",
             language=file_data.language
         )
+        parent_path = (
+            _project_file_path(db, parent)
+            if file_data.parent_id is not None
+            else ""
+        )
+        new_path = (
+            f"{parent_path}/{new_item.name}"
+            if parent_path
+            else new_item.name
+        )
+        _assert_workspace_file_matches(
+            db,
+            project_id,
+            current_user.id,
+            new_path,
+            None,
+            expect_absent=True,
+        )
 
     # 6. Save
     db.add(new_item)
@@ -312,10 +370,25 @@ def create_file_or_folder(
     db.refresh(new_item)
 
     if new_item.type == "file":
+        _sync_workspace_file(
+            db,
+            project_id,
+            current_user.id,
+            _project_file_path(db, new_item),
+            new_item.content or "",
+            check_expected=True,
+        )
         RepositoryIndexService(
             db=db,
             project_id=project_id,
         ).index_file_after_save(new_item)
+    else:
+        _sync_workspace_folder(
+            db,
+            project_id,
+            current_user.id,
+            _project_file_path(db, new_item),
+        )
 
     return new_item
 
@@ -414,6 +487,62 @@ def update_project_file(
         file_id,
         db
     )
+    if (
+        file_data.content is not None
+        and file_data.expected_content is not None
+        and project_file.content != file_data.expected_content
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The file changed in the workspace. Reload it before saving.",
+        )
+    old_path = (
+        _project_file_path(db, project_file)
+        if project_file.type == "file"
+        else None
+    )
+    old_content = project_file.content or ""
+    if (
+        project_file.type == "file"
+        and (file_data.content is not None or file_data.name is not None or file_data.parent_id is not None)
+        and old_path is not None
+    ):
+        _assert_workspace_file_matches(
+            db,
+            project_id,
+            current_user.id,
+            old_path,
+            old_content,
+        )
+    old_folder_path = (
+        _project_file_path(db, project_file)
+        if project_file.type == "folder"
+        else None
+    )
+    folder_path_changed = (
+        project_file.type == "folder"
+        and (file_data.name is not None or file_data.parent_id is not None)
+    )
+    descendant_files = []
+    if folder_path_changed and old_folder_path is not None:
+        descendant_files = [
+            item
+            for item in db.query(ProjectFile)
+            .filter(
+                ProjectFile.project_id == project_id,
+                ProjectFile.type == "file",
+            )
+            .all()
+            if _project_file_path(db, item).startswith(old_folder_path + "/")
+        ]
+        for item in descendant_files:
+            _assert_workspace_file_matches(
+                db,
+                project_id,
+                current_user.id,
+                _project_file_path(db, item),
+                item.content or "",
+            )
 
     # Update name
     if file_data.name is not None:
@@ -491,6 +620,73 @@ def update_project_file(
     db.commit()
     db.refresh(project_file)
 
+    if project_file.type == "file":
+        new_path = _project_file_path(db, project_file)
+        if old_path is not None and old_path != new_path:
+            _sync_workspace_file(
+                db,
+                project_id,
+                current_user.id,
+                old_path,
+                None,
+                expected_content=old_content,
+                check_expected=True,
+            )
+        if content_was_updated or old_path != new_path:
+            _sync_workspace_file(
+                db,
+                project_id,
+                current_user.id,
+                new_path,
+                project_file.content or "",
+                expected_content=old_content if old_path == new_path else None,
+                check_expected=True,
+            )
+    elif folder_path_changed and old_folder_path is not None:
+        new_folder_path = _project_file_path(db, project_file)
+        if old_folder_path != new_folder_path:
+            for item in descendant_files:
+                old_item_path = _project_file_path(
+                    db,
+                    item,
+                ).replace(
+                    new_folder_path,
+                    old_folder_path,
+                    1,
+                )
+                new_item_path = _project_file_path(db, item)
+                item_content = item.content or ""
+                _sync_workspace_file(
+                    db,
+                    project_id,
+                    current_user.id,
+                    old_item_path,
+                    None,
+                    expected_content=item_content,
+                    check_expected=True,
+                )
+                _sync_workspace_file(
+                    db,
+                    project_id,
+                    current_user.id,
+                    new_item_path,
+                    item.content or "",
+                    check_expected=True,
+                )
+            _sync_workspace_folder(
+                db,
+                project_id,
+                current_user.id,
+                old_folder_path,
+                delete=True,
+            )
+            _sync_workspace_folder(
+                db,
+                project_id,
+                current_user.id,
+                new_folder_path,
+            )
+
     if content_was_updated:
         index_service = RepositoryIndexService(
             db=db,
@@ -521,12 +717,20 @@ def apply_project_file_patch(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return CodeActionService(db).apply_action(
+        updated_file = CodeActionService(db).apply_action(
             project_id=project_id,
             file_id=file_id,
             user_id=current_user.id,
             action=action,
         )
+        _sync_workspace_file(
+            db,
+            project_id,
+            current_user.id,
+            _project_file_path(db, updated_file),
+            updated_file.content or "",
+        )
+        return updated_file
     except PatchNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -546,6 +750,52 @@ def apply_project_file_patch(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(error),
+        ) from error
+
+
+def _assert_workspace_file_matches(
+    db: Session,
+    project_id: int,
+    user_id: int,
+    file_path: str,
+    expected_content: str | None,
+    *,
+    expect_absent: bool = False,
+) -> None:
+    try:
+        ProjectWorkspaceService(db).assert_workspace_file_matches(
+            project_id=project_id,
+            user_id=user_id,
+            file_path=file_path,
+            expected_content=expected_content,
+            expect_absent=expect_absent,
+        )
+    except ProjectWorkspaceSyncError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+def _sync_workspace_folder(
+    db: Session,
+    project_id: int,
+    user_id: int,
+    folder_path: str,
+    *,
+    delete: bool = False,
+) -> None:
+    try:
+        ProjectWorkspaceService(db).sync_folder(
+            project_id=project_id,
+            user_id=user_id,
+            folder_path=folder_path,
+            delete=delete,
+        )
+    except ProjectWorkspaceSyncError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Project folder changed in the database but workspace sync failed: {error}",
         ) from error
 
 
@@ -578,6 +828,12 @@ def delete_project_file(
     )
 
     item_name = project_file.name
+    deleted_folder_path = (
+        _project_file_path(db, project_file)
+        if project_file.type == "folder"
+        else None
+    )
+    deleted_file_paths: list[tuple[str, str]] = []
 
     project_files = (
         db.query(ProjectFile)
@@ -599,6 +855,16 @@ def delete_project_file(
         )
         if current_item is not None and current_item.type == "file":
             file_ids.append(current_id)
+            path = _project_file_path(db, current_item)
+            content = current_item.content or ""
+            _assert_workspace_file_matches(
+                db,
+                project_id,
+                current_user.id,
+                path,
+                content,
+            )
+            deleted_file_paths.append((path, content))
         pending_ids.extend(
             child.id for child in children_by_parent.get(current_id, [])
         )
@@ -610,6 +876,25 @@ def delete_project_file(
 
     db.delete(project_file)
     db.commit()
+
+    for file_path, content in deleted_file_paths:
+        _sync_workspace_file(
+            db,
+            project_id,
+            current_user.id,
+            file_path,
+            None,
+            expected_content=content,
+            check_expected=True,
+        )
+    if deleted_folder_path is not None:
+        _sync_workspace_folder(
+            db,
+            project_id,
+            current_user.id,
+            deleted_folder_path,
+            delete=True,
+        )
 
     return {
         "message": "File or folder deleted successfully",

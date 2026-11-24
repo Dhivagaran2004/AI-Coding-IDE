@@ -5,11 +5,30 @@ import math
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
+IDE_SOURCE_ROOT = ROOT_DIR.parent.resolve()
 
 for env_path in (APP_DIR / ".env", ROOT_DIR / ".env"):
     if env_path.exists():
         load_dotenv(env_path)
         break
+
+_default_workspaces_root = IDE_SOURCE_ROOT.parent / (
+    f"{IDE_SOURCE_ROOT.name}-Workspaces"
+)
+IDE_WORKSPACES_ROOT = Path(
+    os.getenv("IDE_WORKSPACES_ROOT", "").strip()
+    or str(_default_workspaces_root)
+).expanduser().resolve()
+try:
+    IDE_WORKSPACES_ROOT.relative_to(IDE_SOURCE_ROOT)
+except ValueError:
+    pass
+else:
+    raise ValueError("IDE_WORKSPACES_ROOT must be outside the IDE source directory.")
+ENABLE_INTERACTIVE_TERMINAL = (
+    os.getenv("ENABLE_INTERACTIVE_TERMINAL", "true").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
