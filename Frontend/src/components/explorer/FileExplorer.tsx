@@ -22,6 +22,8 @@ import {
     FolderPlus,
     Pencil,
     Trash2,
+    ChevronsDownUp,
+    ChevronsUpDown,
 } from "lucide-react";
 
 import {
@@ -76,6 +78,8 @@ interface FileTreeItemProps {
 
     level: number;
     activeFileId?: number | null;
+    expandedFolderIds: Set<number>;
+    onToggleFolder: (folderId: number) => void;
 
     onFileSelect?: (
         file: FileTreeNode
@@ -110,6 +114,8 @@ interface ContextMenuPosition {
     y: number;
 }
 
+const EMPTY_FOLDER_IDS = new Set<number>();
+
 
 // ============================================================
 // File Tree Item
@@ -119,18 +125,14 @@ function FileTreeItem({
     node,
     level,
     activeFileId,
+    expandedFolderIds,
+    onToggleFolder,
     onFileSelect,
     onCreateFile,
     onCreateFolder,
     onRename,
     onDelete,
 }: FileTreeItemProps) {
-
-    const [
-        isExpanded,
-        setIsExpanded,
-    ] = useState(true);
-
 
     const [
         showMenu,
@@ -148,6 +150,7 @@ function FileTreeItem({
 
     const isFolder =
         node.type === "folder";
+    const isExpanded = expandedFolderIds.has(node.id);
     const isSelected =
         !isFolder && node.id === activeFileId;
 
@@ -284,11 +287,7 @@ function FileTreeItem({
 
 
         if (isFolder) {
-
-            setIsExpanded(
-                current =>
-                    !current
-            );
+            onToggleFolder(node.id);
 
             return;
         }
@@ -738,6 +737,8 @@ function FileTreeItem({
                                         level + 1
                                     }
                                     activeFileId={activeFileId}
+                                    expandedFolderIds={expandedFolderIds}
+                                    onToggleFolder={onToggleFolder}
 
                                     onFileSelect={
                                         onFileSelect
@@ -805,7 +806,24 @@ export default function FileExplorer({
         setError,
     ] = useState("");
 
-    const [isRootExpanded, setIsRootExpanded] = useState(true);
+    const [expandedFolders, setExpandedFolders] = useState<{
+        projectId: number;
+        ids: Set<number>;
+    }>(
+        () => ({ projectId, ids: new Set() }),
+    );
+    const expandedFolderIds = expandedFolders.projectId === projectId
+        ? expandedFolders.ids
+        : EMPTY_FOLDER_IDS;
+    const [rootExpansion, setRootExpansion] = useState<{
+        projectId: number;
+        expanded: boolean;
+    }>(
+        () => ({ projectId, expanded: false }),
+    );
+    const isRootExpanded = rootExpansion.projectId === projectId
+        ? rootExpansion.expanded
+        : false;
 
 
     // ========================================================
@@ -1040,6 +1058,42 @@ export default function FileExplorer({
 
     onCreateFolder(null);
 }
+
+    function toggleFolder(folderId: number) {
+        setExpandedFolders((current) => {
+            const next = new Set(
+                current.projectId === projectId ? current.ids : [],
+            );
+            if (next.has(folderId)) {
+                next.delete(folderId);
+            } else {
+                next.add(folderId);
+            }
+            return { projectId, ids: next };
+        });
+    }
+
+    function setAllFoldersExpanded(expanded: boolean) {
+        if (!expanded) {
+            setExpandedFolders({ projectId, ids: new Set() });
+            setRootExpansion({ projectId, expanded: false });
+            return;
+        }
+
+        const folderIds = new Set<number>();
+        const visit = (nodes: FileTreeNode[]) => {
+            for (const node of nodes) {
+                if (node.type === "folder") {
+                    folderIds.add(node.id);
+                    visit(node.children ?? []);
+                }
+            }
+        };
+        visit(tree);
+        setExpandedFolders({ projectId, ids: folderIds });
+        setRootExpansion({ projectId, expanded: true });
+    }
+
     // ========================================================
     // Render
     // ========================================================
@@ -1059,6 +1113,25 @@ export default function FileExplorer({
 
 
                 <div className="explorer-header-actions">
+
+                    <button
+                        type="button"
+                        title="Collapse All"
+                        aria-label="Collapse All"
+                        onClick={() => setAllFoldersExpanded(false)}
+                    >
+                        <ChevronsDownUp size={15} />
+                    </button>
+
+                    <button
+                        type="button"
+                        title="Expand All"
+                        aria-label="Expand All"
+                        onClick={() => setAllFoldersExpanded(true)}
+                        disabled={isLoading || tree.length === 0}
+                    >
+                        <ChevronsUpDown size={15} />
+                    </button>
 
                     {/* New File */}
 
@@ -1118,7 +1191,10 @@ export default function FileExplorer({
                     className="explorer-root-toggle"
                     aria-label={`${isRootExpanded ? "Collapse" : "Expand"} project root`}
                     aria-expanded={isRootExpanded}
-                    onClick={() => setIsRootExpanded((expanded) => !expanded)}
+                    onClick={() => setRootExpansion({
+                        projectId,
+                        expanded: !isRootExpanded,
+                    })}
                 >
                     {isRootExpanded
                         ? <ChevronDown size={14} aria-hidden="true" />
@@ -1209,6 +1285,8 @@ export default function FileExplorer({
 
                                 level={0}
                                 activeFileId={activeFileId}
+                                expandedFolderIds={expandedFolderIds}
+                                onToggleFolder={toggleFolder}
 
                                 onFileSelect={
                                     onFileSelect
