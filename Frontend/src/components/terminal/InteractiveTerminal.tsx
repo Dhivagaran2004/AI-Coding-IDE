@@ -108,7 +108,6 @@ function TerminalProcess({
         let disposed = false;
         let reconnectTimer = 0;
         let retryCount = 0;
-        let disconnectNoticeWritten = false;
         let pendingTicket = session.ticket;
         let resizeFrame = 0;
 
@@ -194,12 +193,6 @@ function TerminalProcess({
                 );
                 socket.onopen = () => {
                     retryCount = 0;
-                    terminal.write(
-                        disconnectNoticeWritten
-                            ? "\r\n\x1b[90m[reconnected]\x1b[0m\r\n"
-                            : "\r\n\x1b[90m[connected]\x1b[0m\r\n",
-                    );
-                    disconnectNoticeWritten = false;
                     fitAndResize();
                 };
                 socket.onmessage = (event: MessageEvent<string>) => {
@@ -217,12 +210,6 @@ function TerminalProcess({
                         return;
                     }
                     if (!disposed) {
-                        if (!disconnectNoticeWritten) {
-                            terminal.write(
-                                "\r\n\x1b[90m[connection unavailable; retrying]\x1b[0m\r\n",
-                            );
-                            disconnectNoticeWritten = true;
-                        }
                         const delay = Math.min(1000 * (2 ** retryCount), 15000);
                         retryCount += 1;
                         reconnectTimer = window.setTimeout(() => void connect(), delay);
