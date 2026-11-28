@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketState
 
 
 MAX_SESSIONS_PER_USER = 8
@@ -417,8 +417,24 @@ class TerminalSessionManager:
             session.last_interaction_at = time.monotonic()
             backlog = session.output_snapshot()
         if previous_websocket is not None and previous_websocket is not websocket:
-            await previous_websocket.close(code=4001)
+            await self._close_websocket(previous_websocket, code=4001)
         return queue, backlog
+
+    @staticmethod
+    async def _close_websocket(websocket: WebSocket, *, code: int) -> None:
+        if (
+            websocket.client_state is WebSocketState.DISCONNECTED
+            or websocket.application_state is WebSocketState.DISCONNECTED
+        ):
+            return
+        try:
+            await websocket.close(code=code)
+        except RuntimeError:
+            if (
+                websocket.client_state is not WebSocketState.DISCONNECTED
+                and websocket.application_state is not WebSocketState.DISCONNECTED
+            ):
+                raise
 
     async def detach(
         self,
@@ -529,17 +545,11 @@ class TerminalSessionManager:
             and not session.process.is_alive()
             and session.websocket is not None
         ):
-            try:
-                await session.websocket.close(code=1000)
-            except RuntimeError:
-                pass
+            await self._close_websocket(session.websocket, code=1000)
 
     async def _terminate(self, session: TerminalSession) -> None:
         if session.websocket is not None:
-            try:
-                await session.websocket.close(code=1001)
-            except RuntimeError:
-                pass
+            await self._close_websocket(session.websocket, code=1001)
         await asyncio.to_thread(session.process.terminate)
         if session.reader_task is not None and session.reader_task is not asyncio.current_task():
             session.reader_task.cancel()

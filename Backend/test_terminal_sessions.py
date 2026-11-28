@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from starlette.websockets import WebSocketState
 
 from App.service.Terminal.terminal_sessions import (
     TerminalSessionError,
@@ -100,10 +101,22 @@ def test_session_input_resize_and_close(tmp_path):
 def test_multiple_sessions_survive_websocket_disconnect_and_reconnect(tmp_path):
     class FakeWebSocket:
         def __init__(self):
-            self.closed = False
+            self.client_state = WebSocketState.CONNECTED
+            self.application_state = WebSocketState.CONNECTED
+            self.close_codes = []
+            self.fail_close = False
 
         async def close(self, code=1000):
-            self.closed = True
+            if (
+                self.client_state is WebSocketState.DISCONNECTED
+                or self.application_state is WebSocketState.DISCONNECTED
+            ):
+                self.application_state = WebSocketState.DISCONNECTED
+                raise RuntimeError("Cannot call close after disconnect.")
+            self.application_state = WebSocketState.DISCONNECTED
+            self.close_codes.append(code)
+            if self.fail_close:
+                raise RuntimeError("The connection closed during close.")
 
     async def run():
         manager, processes = manager_with_fake_pty()
@@ -145,6 +158,21 @@ def test_multiple_sessions_survive_websocket_disconnect_and_reconnect(tmp_path):
         )
 
         assert replacement_backlog == "retained output"
+
+        active_replacement = FakeWebSocket()
+        await manager.attach(reconnected, active_replacement)
+        assert replacement_socket.close_codes == [4001]
+
+        active_replacement.client_state = WebSocketState.DISCONNECTED
+        final_socket = FakeWebSocket()
+        await manager.attach(reconnected, final_socket)
+        assert active_replacement.close_codes == []
+
+        final_socket.fail_close = True
+        last_socket = FakeWebSocket()
+        await manager.attach(reconnected, last_socket)
+        assert final_socket.close_codes == [4001]
+
         assert len(manager.list_sessions(user_id=1, project_id=9)) == 2
         await manager.close_all()
         assert processes[0].alive is False
