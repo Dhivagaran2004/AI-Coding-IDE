@@ -318,32 +318,6 @@ def make_dependency_plan_response(command=None):
     return json.dumps(payload)
 
 
-def acceptance_results_for(
-    task: dict[str, object],
-    plan_task_id: str,
-    evidence: str,
-    status: str = "met",
-) -> list[dict[str, object]]:
-    plan_details = task["plan_details"]
-    assert isinstance(plan_details, dict)
-    tasks = plan_details["tasks"]
-    assert isinstance(tasks, list)
-    plan_task = next(
-        row for row in tasks
-        if isinstance(row, dict) and row.get("id") == plan_task_id
-    )
-    criteria = plan_task["acceptance_criteria"]
-    assert isinstance(criteria, list)
-    return [
-        {
-            "criterion": str(criterion),
-            "status": status,
-            "evidence": evidence if status != "not_verified" else None,
-        }
-        for criterion in criteria
-    ]
-
-
 def test_task_planner_validates_structured_multi_file_actions():
     payload = {"plan": ["Review both files"], "actions": [action_payload(), {
         **action_payload(),
@@ -738,7 +712,7 @@ def test_agent_plans_related_changes_for_main_and_helper_files(agent_db, monkeyp
     assert "FILE: helpers.py\ndef calculate():" in service.contexts[0]
 
 
-def test_agent_stages_dependent_actions_until_prerequisite_is_verified(
+def test_agent_automatically_advances_dependent_actions(
     agent_db,
     monkeypatch,
 ):
@@ -765,104 +739,33 @@ def test_agent_stages_dependent_actions_until_prerequisite_is_verified(
         "pending",
         "pending",
     ]
-    blank_notes = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={"plan_task_id": "step-1", "verification_notes": "  "},
-    )
-    assert blank_notes.status_code == 422
-    premature = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-2",
-            "verification_notes": "The helper is ready.",
-        },
-    )
-    assert premature.status_code == 409
 
     applied_first = client.post(
         f"/ai/agent/tasks/{task_id}/approve",
         json={"action_indexes": [0]},
     ).json()
-    assert applied_first["status"] == "awaiting_validation"
+    assert applied_first["status"] == "awaiting_approval"
     assert applied_first["actions"][0]["status"] == "applied"
-    assert applied_first["actions"][1]["status"] == "scheduled"
-    assert applied_first["plan_details"]["tasks"][0]["status"] == "applied"
-
-    not_verified = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The entry point behavior is correct.",
-        },
-    ).json()
-    assert not_verified["status"] == "awaiting_validation"
-    assert not_verified["verification_status"] == "not_verified"
-    assert not_verified["plan_details"]["tasks"][0]["status"] == "applied"
-    assert not_verified["plan_details"]["tasks"][0]["verification_status"] == "not_verified"
-
-    completed_first = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The entry point behavior is correct.",
-            "acceptance_results": acceptance_results_for(
-                not_verified,
-                "step-1",
-                "Confirmed the entry point returns the specified behavior.",
-            ),
-        },
-    ).json()
-    assert completed_first["status"] == "awaiting_approval"
-    assert completed_first["actions"][1]["status"] == "awaiting_approval"
-    assert completed_first["plan_details"]["tasks"][1]["status"] == "in_progress"
-    assert completed_first["plan_details"]["tasks"][0]["verification_status"] == "verified"
+    assert applied_first["actions"][1]["status"] == "awaiting_approval"
+    assert applied_first["plan_details"]["tasks"][0]["status"] == "completed"
+    assert applied_first["plan_details"]["tasks"][0]["verification_status"] == "not_verified"
+    assert applied_first["plan_details"]["tasks"][1]["status"] == "in_progress"
+    assert applied_first["status"] == "awaiting_approval"
 
     applied_second = client.post(
         f"/ai/agent/tasks/{task_id}/approve",
         json={"action_indexes": [1]},
     ).json()
-    assert applied_second["status"] == "awaiting_validation"
-    assert applied_second["plan_details"]["tasks"][1]["status"] == "applied"
-
-    completed_second = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-2",
-            "verification_notes": "The helper returns the expected value.",
-            "acceptance_results": acceptance_results_for(
-                applied_second,
-                "step-2",
-                "Called the helper and confirmed its expected return value.",
-            ),
-        },
-    ).json()
-    assert completed_second["status"] == "awaiting_validation"
-    assert completed_second["plan_details"]["tasks"][2]["status"] == "in_progress"
-
-    completed_verification = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-3",
-            "verification_notes": "The application and helper are consistent.",
-            "acceptance_results": acceptance_results_for(
-                completed_second,
-                "step-3",
-                "Confirmed the application and helper work together.",
-            ),
-        },
-    ).json()
-    assert completed_verification["status"] == "completed"
-    assert completed_verification["verification_status"] == "verified"
-    assert [item["status"] for item in completed_verification["plan_details"]["tasks"]] == [
+    assert applied_second["status"] == "completed"
+    assert [item["status"] for item in applied_second["plan_details"]["tasks"]] == [
         "completed",
         "completed",
         "completed",
     ]
-    assert any(
-        entry["plan_task_id"] == "step-1"
-        and entry.get("verification_notes") == "The entry point behavior is correct."
-        for entry in completed_verification["task_history"]
-    )
+    assert applied_second["verification_status"] == "not_verified"
+    assert applied_second["plan_details"]["tasks"][1]["verification_status"] == "not_verified"
+    assert applied_second["plan_details"]["tasks"][2]["verification_status"] == "not_verified"
+    assert "automated verification was unavailable" in applied_second["stop_reason"]
 
 
 def test_rejected_plan_action_blocks_dependent_tasks(agent_db, monkeypatch):
@@ -926,23 +829,9 @@ def test_successful_validation_completes_verification_task(agent_db, monkeypatch
         f"/ai/agent/tasks/{task_id}/approve",
         json={"accept_all": True},
     ).json()
-    assert applied["status"] == "awaiting_validation"
-    assert applied["plan_details"]["tasks"][0]["status"] == "applied"
-
-    ready_for_validation = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The requested behavior is implemented.",
-            "acceptance_results": acceptance_results_for(
-                applied,
-                "step-1",
-                "Confirmed calculate returns the requested value.",
-            ),
-        },
-    ).json()
-    assert ready_for_validation["status"] == "awaiting_approval"
-    assert ready_for_validation["plan_details"]["tasks"][1]["status"] == "in_progress"
+    assert applied["status"] == "awaiting_approval"
+    assert applied["plan_details"]["tasks"][0]["status"] == "completed"
+    assert applied["plan_details"]["tasks"][1]["status"] == "in_progress"
 
     validated = client.post(
         f"/ai/agent/tasks/{task_id}/validate",
@@ -950,16 +839,15 @@ def test_successful_validation_completes_verification_task(agent_db, monkeypatch
     ).json()
 
     assert validated["status"] == "completed"
-    assert validated["verification_status"] == "verified"
+    assert validated["verification_status"] == "not_verified"
     assert validated["validation_result"]["success"] is True
     assert [item["status"] for item in validated["plan_details"]["tasks"]] == [
         "completed",
         "completed",
     ]
-    assert all(
-        item["verification_status"] == "verified"
-        for item in validated["plan_details"]["tasks"]
-    )
+    assert validated["plan_details"]["tasks"][0]["verification_status"] == "not_verified"
+    assert validated["plan_details"]["tasks"][1]["verification_status"] == "verified"
+    assert validated["plan_details"]["tasks"][0]["acceptance_results"][0]["status"] == "not_verified"
 
 
 def test_passing_command_does_not_claim_implementation_criteria_met(
@@ -1005,30 +893,48 @@ def test_passing_command_does_not_claim_implementation_criteria_met(
     ).json()
 
     assert validated["validation_result"]["success"] is True
-    assert validated["status"] == "awaiting_validation"
+    assert validated["status"] == "completed"
     assert validated["verification_status"] == "not_verified"
     plan_task = validated["plan_details"]["tasks"][0]
-    assert plan_task["status"] == "applied"
+    assert plan_task["status"] == "completed"
     assert plan_task["verification_status"] == "not_verified"
     assert plan_task["acceptance_results"][0]["status"] == "not_verified"
+    assert "not individually assessed" in validated["stop_reason"]
 
-    completed = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The acceptance criterion was checked separately.",
-            "acceptance_results": acceptance_results_for(
-                validated,
-                "step-1",
-                "Invoked calculate and confirmed the expected return value.",
-            ),
-        },
+
+def test_skipping_validation_does_not_require_user_criterion_review(
+    agent_db,
+    monkeypatch,
+):
+    client = make_agent_client(agent_db, monkeypatch)
+    monkeypatch.setattr(
+        agent_router,
+        "ai_service",
+        FakeAIService(make_structured_plan_response("python -m pytest")),
+    )
+    task = client.post(
+        "/ai/agent/tasks",
+        json={"project_id": 1, "task": "Update calculate and test it"},
     ).json()
-    assert completed["status"] == "completed"
-    assert completed["verification_status"] == "verified"
+    task_id = task["id"]
+    client.post(
+        f"/ai/agent/tasks/{task_id}/approve",
+        json={"accept_all": True},
+    )
+
+    skipped = client.post(
+        f"/ai/agent/tasks/{task_id}/validate",
+        json={"command": "python -m pytest", "approved": False},
+    ).json()
+
+    assert skipped["status"] == "completed"
+    assert skipped["verification_status"] == "not_verified"
+    assert skipped["plan_details"]["tasks"][0]["status"] == "completed"
+    assert skipped["plan_details"]["tasks"][0]["acceptance_results"][0]["status"] == "not_verified"
+    assert "Validation was skipped" in skipped["stop_reason"]
 
 
-def test_unmet_acceptance_criterion_fails_task_with_evidence(agent_db, monkeypatch):
+def test_agent_completion_does_not_claim_unverified_criteria_are_met(agent_db, monkeypatch):
     client = make_agent_client(agent_db, monkeypatch)
     monkeypatch.setattr(
         agent_router,
@@ -1044,40 +950,11 @@ def test_unmet_acceptance_criterion_fails_task_with_evidence(agent_db, monkeypat
         f"/ai/agent/tasks/{task_id}/approve",
         json={"accept_all": True},
     ).json()
-    criterion = applied["plan_details"]["tasks"][0]["acceptance_criteria"][0]
 
-    mismatched = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The check failed.",
-            "acceptance_results": [{
-                "criterion": "An unrelated criterion",
-                "status": "met",
-                "evidence": "No evidence.",
-            }],
-        },
-    )
-    assert mismatched.status_code == 422
-
-    result = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The requested behavior is not present.",
-            "acceptance_results": [{
-                "criterion": criterion,
-                "status": "not_met",
-                "evidence": "Calling calculate still returns the old value.",
-            }],
-        },
-    ).json()
-
-    assert result["status"] == "failed"
-    assert result["verification_status"] == "failed"
-    assert result["plan_details"]["tasks"][0]["status"] == "blocked"
-    assert result["plan_details"]["tasks"][0]["acceptance_results"][0]["status"] == "not_met"
-    assert result["validation_result"]["kind"] == "acceptance_criteria"
+    assert applied["status"] == "completed"
+    assert applied["verification_status"] == "not_verified"
+    assert applied["plan_details"]["tasks"][0]["status"] == "completed"
+    assert applied["plan_details"]["tasks"][0]["acceptance_results"][0]["status"] == "not_verified"
 
 
 def test_unavailable_docker_reports_verification_as_not_verified(
@@ -1100,45 +977,20 @@ def test_unavailable_docker_reports_verification_as_not_verified(
         f"/ai/agent/tasks/{task_id}/approve",
         json={"accept_all": True},
     ).json()
-    ready = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The requested behavior was checked manually.",
-            "acceptance_results": acceptance_results_for(
-                applied,
-                "step-1",
-                "Confirmed calculate returns the requested result.",
-            ),
-        },
-    ).json()
-    assert ready["status"] == "awaiting_approval"
+    assert applied["status"] == "awaiting_approval"
 
     unavailable = client.post(
         f"/ai/agent/tasks/{task_id}/validate",
         json={"command": "python -m pytest", "approved": True},
     ).json()
 
-    assert unavailable["status"] == "awaiting_validation"
+    assert unavailable["status"] == "completed"
     assert unavailable["verification_status"] == "not_verified"
     assert unavailable["validation_result"]["success"] is False
     assert unavailable["validation_result"]["executed"] is False
-    assert unavailable["plan_details"]["tasks"][1]["verification_status"] == "pending"
-
-    manually_verified = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-2",
-            "verification_notes": "The expected result was manually verified.",
-            "acceptance_results": acceptance_results_for(
-                unavailable,
-                "step-2",
-                "Executed the application and observed the expected result.",
-            ),
-        },
-    ).json()
-    assert manually_verified["status"] == "completed"
-    assert manually_verified["verification_status"] == "verified"
+    assert unavailable["plan_details"]["tasks"][0]["status"] == "completed"
+    assert unavailable["plan_details"]["tasks"][1]["status"] == "completed"
+    assert unavailable["plan_details"]["tasks"][1]["verification_status"] == "not_verified"
 
 
 def test_persistent_agent_store_recovers_active_work_as_paused(agent_db):
@@ -1927,8 +1779,9 @@ def test_agent_approval_preserves_file_if_repository_reindexing_fails(
     )
 
     assert applied.status_code == 200
-    assert applied.json()["status"] == "awaiting_validation"
-    assert applied.json()["plan_details"]["tasks"][0]["status"] == "applied"
+    assert applied.json()["status"] == "completed"
+    assert applied.json()["plan_details"]["tasks"][0]["status"] == "completed"
+    assert applied.json()["verification_status"] == "not_verified"
     assert applied.json()["actions"][0]["status"] == "applied"
     assert applied.json()["changes"][0]["content"].endswith("return 2\n")
     assert agent_db.get(ProjectFile, 11).content.endswith("return 2\n")
@@ -2386,8 +2239,9 @@ def test_agent_approval_preserves_file_changes_outside_patch(agent_db, monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "awaiting_validation"
-    assert response.json()["plan_details"]["tasks"][0]["status"] == "applied"
+    assert response.json()["status"] == "completed"
+    assert response.json()["plan_details"]["tasks"][0]["status"] == "completed"
+    assert response.json()["verification_status"] == "not_verified"
     assert response.json()["actions"][0]["status"] == "applied"
     assert file.content == "def calculate():\n    return 2\n# user edit after proposal\n"
 
@@ -2953,24 +2807,12 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
     task = client.get(f"/ai/agent/tasks/{task_id}").json()
     assert task["status"] == "awaiting_approval"
 
-    applied = client.post(
+    ready_for_validation = client.post(
         f"/ai/agent/tasks/{task_id}/approve",
         json={"action_indexes": [0]},
     ).json()
-    assert applied["status"] == "awaiting_validation"
-    applied = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The requested change is ready for validation.",
-            "acceptance_results": acceptance_results_for(
-                applied,
-                "step-1",
-                "Confirmed the requested change is implemented.",
-            ),
-        },
-    ).json()
-    assert applied["status"] == "awaiting_approval"
+    assert ready_for_validation["status"] == "awaiting_approval"
+    assert ready_for_validation["plan_details"]["tasks"][0]["status"] == "completed"
 
     failed = client.post(
         f"/ai/agent/tasks/{task_id}/validate",
@@ -3032,21 +2874,9 @@ def test_agent_failure_recovery_requires_approval_and_completes(agent_db, monkey
         json={"command": "python -m pytest", "approved": True},
     ).json()
 
-    assert completed["status"] == "awaiting_validation"
-    completed = client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The corrected behavior satisfies the criterion.",
-            "acceptance_results": acceptance_results_for(
-                completed,
-                "step-1",
-                "Confirmed calculate returns the corrected value.",
-            ),
-        },
-    ).json()
     assert completed["status"] == "completed"
     assert completed["validation_result"]["success"] is True
+    assert completed["verification_status"] == "not_verified"
     assert agent_db.get(ProjectFile, 11).content.endswith("return 3\n")
 
 
@@ -3096,18 +2926,6 @@ def test_agent_correction_clarification_preserves_applied_work(agent_db, monkeyp
         json={"accept_all": True},
     )
     client.post(
-        f"/ai/agent/tasks/{task_id}/plan-tasks/complete",
-        json={
-            "plan_task_id": "step-1",
-            "verification_notes": "The original implementation task was applied.",
-            "acceptance_results": acceptance_results_for(
-                client.get(f"/ai/agent/tasks/{task_id}").json(),
-                "step-1",
-                "Confirmed the original implementation behavior.",
-            ),
-        },
-    )
-    client.post(
         f"/ai/agent/tasks/{task_id}/validate",
         json={"command": "python -m pytest", "approved": True},
     )
@@ -3143,7 +2961,8 @@ def test_agent_correction_clarification_preserves_applied_work(agent_db, monkeyp
     )
     assert any(
         entry["iteration"] == 0
-        and entry.get("verification_notes")
-        == "The original implementation task was applied."
+        and entry["plan_task_id"] == "step-1"
+        and entry["status"] == "completed"
+        and "verification_notes" not in entry
         for entry in recovered["task_history"]
     )

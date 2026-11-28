@@ -1872,6 +1872,32 @@ textarea:focus-visible {
     cursor: not-allowed;
 }
 
+.editor-split-button {
+    height: 26px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    gap: 6px;
+    padding: 0 9px;
+
+    background: #252526;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+
+    color: #cccccc;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.editor-split-button:hover,
+.editor-split-button.is-active {
+    background: #333333;
+    border-color: #555555;
+    color: #ffffff;
+}
+
 
 /* =========================================================
    MONACO EDITOR
@@ -1883,9 +1909,143 @@ textarea:focus-visible {
     min-width: 0;
     min-height: 0;
 
+    display: flex;
+    flex-direction: column;
+
     overflow: hidden;
 
     background: #1e1e1e;
+}
+
+.editor-area.is-split {
+    flex-direction: row;
+}
+
+.editor-split-pane {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+
+    min-width: 0;
+    min-height: 0;
+
+    overflow: hidden;
+}
+
+.editor-split-pane-secondary {
+    border-left: 1px solid #3a3a3a;
+}
+
+.editor-split-header {
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+
+    padding: 0 10px;
+
+    background: #181818;
+    border-bottom: 1px solid #2d2d2d;
+    color: #cccccc;
+    font-size: 11px;
+}
+
+.editor-split-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-split-header select {
+    max-width: 45%;
+    min-width: 0;
+
+    padding: 3px 6px;
+
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+
+    background: #252526;
+    color: #cccccc;
+    font-size: 11px;
+}
+
+.editor-area.is-split .code-editor-container {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+}
+
+.editor-review-preview {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.editor-review-preview__header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 48px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #2d2d2d;
+    background: #181818;
+}
+
+.editor-review-preview__header > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.editor-review-preview__header strong,
+.editor-review-preview__header span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-review-preview__header strong {
+    color: #e1e1e1;
+    font-size: 12px;
+}
+
+.editor-review-preview__header span {
+    color: #92979e;
+    font-size: 11px;
+}
+
+.editor-review-preview__header button {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: #aeb2b8;
+    cursor: pointer;
+}
+
+.editor-review-preview__header button:hover {
+    background: #333333;
+    color: #ffffff;
+}
+
+.editor-review-preview__diff {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .code-editor-container {

@@ -21,7 +21,6 @@ from App.schema.agent_schema import (
     AgentClarification,
     AgentCommandApproval,
     AgentPlan,
-    AgentPlanTaskCompletion,
     AgentTaskCreate,
     AgentTaskResponse,
 )
@@ -108,19 +107,6 @@ def _plan_task_rows(task: AgentTask) -> list[dict[str, object]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _plan_task_by_id(
-    task: AgentTask,
-    plan_task_id: str,
-) -> dict[str, object] | None:
-    return next(
-        (
-            row for row in _plan_task_rows(task)
-            if row.get("id") == plan_task_id
-        ),
-        None,
-    )
 
 
 def _plan_task_actions(
@@ -317,6 +303,107 @@ def _advance_plan_execution(task: AgentTask) -> None:
     if task.plan_details is None:
         return
     _sync_plan_task_actions(task)
+    for row in _plan_task_rows(task):
+        if row.get("status") != "applied":
+            continue
+        plan_task_id = str(row.get("id", ""))
+        if not plan_task_id:
+            continue
+        action_items = _plan_task_actions(task, plan_task_id)
+        if not action_items or any(
+            item.get("status") != "applied" for item in action_items
+        ):
+            continue
+        dependencies = row.get("dependencies", [])
+        tasks_by_id = {
+            str(item.get("id")): item
+            for item in _plan_task_rows(task)
+            if item.get("id")
+        }
+        if not isinstance(dependencies, list) or any(
+            tasks_by_id.get(str(dependency), {}).get("status") != "completed"
+            for dependency in dependencies
+        ):
+            continue
+        _record_plan_task_status(
+            task,
+            plan_task_id,
+            "completed",
+            "Approved changes were applied; the agent will verify the plan automatically.",
+        )
+    _activate_ready_plan_tasks(task)
+    _sync_plan_task_actions(task)
+    validation_succeeded = bool(
+        task.validation_result
+        and task.validation_result.get("success") is True
+    )
+    validation_unavailable = (
+        (task.validation_command is None and task.validation_result is None)
+        or bool(
+            task.validation_result
+            and task.validation_result.get("executed") is False
+        )
+    )
+    if validation_succeeded or validation_unavailable:
+        for row in _plan_task_rows(task):
+            plan_task_id = str(row.get("id", ""))
+            if not plan_task_id:
+                continue
+            if (
+                row.get("status") == "completed"
+                and row.get("verification_status") == "pending"
+                and _plan_task_actions(task, plan_task_id)
+            ):
+                row["verification_status"] = "not_verified"
+                criteria = row.get("acceptance_criteria", [])
+                if isinstance(criteria, list):
+                    evidence = (
+                        "Project validation passed, but this criterion was not "
+                        "individually assessed."
+                        if validation_succeeded
+                        else "Automated validation was unavailable; this criterion "
+                        "could not be individually assessed."
+                    )
+                    row["acceptance_results"] = [
+                        {
+                            "criterion": str(criterion),
+                            "status": "not_verified",
+                            "evidence": evidence,
+                        }
+                        for criterion in criteria
+                    ]
+            elif (
+                row.get("status") == "in_progress"
+                and row.get("task_type") == "verification"
+            ):
+                row["verification_status"] = (
+                    "verified" if validation_succeeded else "not_verified"
+                )
+                criteria = row.get("acceptance_criteria", [])
+                if isinstance(criteria, list):
+                    evidence = (
+                        "The agent's project validation command completed successfully."
+                        if validation_succeeded
+                        else "The agent could not run project validation automatically."
+                    )
+                    row["acceptance_results"] = [
+                        {
+                            "criterion": str(criterion),
+                            "status": "met" if validation_succeeded else "not_verified",
+                            "evidence": evidence,
+                        }
+                        for criterion in criteria
+                    ]
+                _record_plan_task_status(
+                    task,
+                    plan_task_id,
+                    "completed",
+                    (
+                        "The agent's project validation completed successfully."
+                        if validation_succeeded
+                        else "Project validation could not run automatically."
+                    ),
+                )
     _activate_ready_plan_tasks(task)
     _sync_plan_task_actions(task)
     task_rows = _plan_task_rows(task)
@@ -360,9 +447,32 @@ def _advance_plan_execution(task: AgentTask) -> None:
             task.stop_reason = (
                 "Complete the current plan task(s) before running project validation."
             )
+    elif (
+        task.validation_result
+        and task.validation_result.get("success") is False
+        and task.validation_result.get("executed") is not False
+        and not any(
+            item.get("name") == "execute_command_result"
+            and item.get("result") == task.validation_result
+            for item in task.tool_history
+        )
+    ):
+        task.status = "failed"
+        task.verification_status = "failed"
+        task.stop_reason = (
+            "Automated project validation failed; continue to propose a correction."
+        )
     elif all_tasks_completed and task.verification_status == "verified":
         task.status = "completed"
         task.stop_reason = "All plan tasks are complete."
+    elif all_tasks_completed and task.verification_status == "not_verified":
+        task.status = "completed"
+        task.stop_reason = (
+            "Plan tasks are complete. Project validation passed, but some acceptance "
+            "criteria were not individually assessed."
+            if validation_succeeded
+            else "Plan tasks are complete, but automated verification was unavailable."
+        )
     else:
         task.status = "awaiting_validation"
         task.stop_reason = (
@@ -374,47 +484,6 @@ def _advance_plan_execution(task: AgentTask) -> None:
 
 
 def _complete_plan_tasks_after_validation(task: AgentTask) -> None:
-    _sync_plan_task_actions(task)
-    for row in _plan_task_rows(task):
-        plan_task_id = str(row.get("id", ""))
-        if not plan_task_id:
-            continue
-        if row.get("status") == "applied":
-            criteria = row.get("acceptance_criteria", [])
-            if isinstance(criteria, list):
-                row["verification_status"] = "not_verified"
-                row["acceptance_results"] = [
-                    {
-                        "criterion": str(criterion),
-                        "status": "not_verified",
-                        "evidence": (
-                            "The approved validation command passed, but this "
-                            "criterion was not individually assessed."
-                        ),
-                    }
-                    for criterion in criteria
-                ]
-        elif row.get("status") == "in_progress" and row.get("task_type") == "verification":
-            criteria = row.get("acceptance_criteria", [])
-            if isinstance(criteria, list):
-                row["verification_status"] = "verified"
-                row["acceptance_results"] = [
-                    {
-                        "criterion": str(criterion),
-                        "status": "met",
-                        "evidence": (
-                            "The approved project validation command completed "
-                            "successfully."
-                        ),
-                    }
-                    for criterion in criteria
-                ]
-            _record_plan_task_status(
-                task,
-                plan_task_id,
-                "completed",
-                "The approved project validation completed successfully.",
-            )
     _advance_plan_execution(task)
 
 
@@ -651,10 +720,11 @@ async def _run_sandbox_plan_qa(
             output=repair_response,
         )
 
-    if result is not None and not result.success:
+    if result is not None and result.executed and not result.success:
+        task.validation_result = result.model_dump()
         task.add_step(
             "sandbox_qa",
-            "failed" if result.executed else "not_verified",
+            "failed",
             "Sandbox QA did not pass; review the reported issues before applying changes",
             input=qa_command,
             output=(result.stdout or result.stderr)[:MAX_AGENT_OUTPUT_CHARS],
@@ -1919,161 +1989,6 @@ def undo_agent_task_changes(
     return response
 
 
-@router.post(
-    "/tasks/{task_id}/plan-tasks/complete",
-    response_model=AgentTaskResponse,
-)
-def complete_agent_plan_task(
-    task_id: str,
-    request: AgentPlanTaskCompletion,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = cast(int, current_user.id)
-    task = _get_owned_task(task_id, user_id, db)
-    verification_notes = request.verification_notes.strip()
-    if not verification_notes:
-        raise HTTPException(
-            status_code=422,
-            detail="Verification notes cannot be empty.",
-        )
-    if task.status != "awaiting_validation":
-        raise HTTPException(
-            status_code=409,
-            detail="Task is not waiting for plan-task verification.",
-        )
-    plan_task = _plan_task_by_id(task, request.plan_task_id)
-    if plan_task is None:
-        raise HTTPException(status_code=404, detail="Plan task not found.")
-    if plan_task.get("status") not in {"applied", "in_progress"}:
-        raise HTTPException(
-            status_code=409,
-            detail="Plan task must be active and have its approved changes applied.",
-        )
-    dependencies = plan_task.get("dependencies", [])
-    tasks_by_id = {
-        str(row.get("id")): row
-        for row in _plan_task_rows(task)
-        if row.get("id")
-    }
-    if not isinstance(dependencies, list) or any(
-        tasks_by_id.get(str(dependency), {}).get("status") != "completed"
-        for dependency in dependencies
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Plan task prerequisites are not complete.",
-        )
-    action_items = _plan_task_actions(task, request.plan_task_id)
-    if any(item.get("status") != "applied" for item in action_items):
-        raise HTTPException(
-            status_code=409,
-            detail="All plan-task file changes must be applied before completion.",
-        )
-    criteria = plan_task.get("acceptance_criteria", [])
-    if not isinstance(criteria, list):
-        raise HTTPException(
-            status_code=409,
-            detail="Plan task acceptance criteria are invalid.",
-        )
-    supplied_results = [
-        result.model_dump() for result in request.acceptance_results
-    ]
-    results_by_criterion = {
-        str(result["criterion"]): result for result in supplied_results
-    }
-    if len(results_by_criterion) != len(supplied_results) or (
-        supplied_results
-        and set(results_by_criterion) != set(map(str, criteria))
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Provide exactly one outcome for every acceptance criterion."
-            ),
-        )
-    if not supplied_results:
-        supplied_results = [
-            {
-                "criterion": str(criterion),
-                "status": "not_verified",
-                "evidence": None,
-            }
-            for criterion in criteria
-        ]
-    result_statuses = {
-        str(result["status"]) for result in supplied_results
-    }
-    plan_task["acceptance_results"] = supplied_results
-    if "not_met" in result_statuses:
-        plan_task["verification_status"] = "failed"
-        _record_plan_task_status(
-            task,
-            request.plan_task_id,
-            "blocked",
-            "One or more acceptance criteria were not met.",
-            verification_notes=verification_notes,
-        )
-        task.verification_status = "failed"
-        task.validation_result = {
-            "success": False,
-            "kind": "acceptance_criteria",
-            "acceptance_results": supplied_results,
-        }
-        task.status = "failed"
-        task.stop_reason = (
-            "One or more acceptance criteria were not met; continue to propose a correction."
-        )
-        task.add_step(
-            "verification",
-            "failed",
-            "Acceptance criteria were not met",
-            output=json.dumps(supplied_results, ensure_ascii=True)[:MAX_AGENT_OUTPUT_CHARS],
-        )
-        task.persist()
-        return task.as_dict()
-    if "not_verified" in result_statuses:
-        plan_task["verification_status"] = "not_verified"
-        task.verification_status = "not_verified"
-        task.status = "awaiting_validation"
-        task.stop_reason = (
-            "Acceptance criteria remain not verified; provide an outcome and evidence for each criterion."
-        )
-        task.persist()
-        return task.as_dict()
-    if (
-        plan_task.get("task_type") == "verification"
-        and task.validation_command
-        and not (
-            task.validation_result
-            and task.validation_result.get("executed") is False
-        )
-        and not (
-            task.validation_result
-            and task.validation_result.get("success") is True
-        )
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Run the approved validation command to complete this verification task.",
-        )
-    has_scheduled_work = any(
-        item.get("status") == "scheduled" for item in task.actions
-    )
-    _record_plan_task_status(
-        task,
-        request.plan_task_id,
-        "completed",
-        "User confirmed the plan task's acceptance criteria.",
-        verification_notes=verification_notes,
-    )
-    plan_task["verification_status"] = "verified"
-    if has_scheduled_work:
-        task.validation_result = None
-    _advance_plan_execution(task)
-    return task.as_dict()
-
-
 @router.post("/tasks/{task_id}/validate", response_model=AgentTaskResponse)
 def run_agent_validation(
     task_id: str,
@@ -2116,11 +2031,12 @@ def run_agent_validation(
             task.persist()
             return task.as_dict()
         if task.plan_details is not None:
-            task.status = "awaiting_validation"
-            task.verification_status = "not_verified"
             task.validation_command = None
+            task.validation_result = None
+            _advance_plan_execution(task)
             task.stop_reason = (
-                "Validation was declined; acceptance criteria remain not verified."
+                "Validation was skipped; plan tasks are complete but acceptance "
+                "criteria remain not verified."
             )
         else:
             task.status = "completed"
@@ -2190,7 +2106,6 @@ def run_agent_validation(
             task.add_step("test", "completed", "Validation passed", output=safe_result.stdout)
             task.add_step("finish", "completed", task.stop_reason)
         elif not safe_result.executed:
-            task.status = "awaiting_validation"
             task.verification_status = "not_verified"
             task.stop_reason = (
                 "Validation was not run because Docker is unavailable; acceptance "
@@ -2202,6 +2117,10 @@ def run_agent_validation(
                 "Validation was not executed",
                 error=safe_result.stderr,
             )
+            if task.plan_details is not None:
+                _complete_plan_tasks_after_validation(task)
+            else:
+                task.status = "awaiting_validation"
         else:
             task.status = "failed"
             task.verification_status = "failed"

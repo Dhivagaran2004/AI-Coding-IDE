@@ -404,23 +404,6 @@ export async function approveAgentValidation(
     return normalizeAgentTask(response.data);
 }
 
-export async function completeAgentPlanTask(
-    taskId: string,
-    planTaskId: string,
-    verificationNotes: string,
-    acceptanceResults: AgentAcceptanceCriterionResult[] = [],
-): Promise<AgentTask> {
-    const response = await api.post<AgentTaskApiResponse>(
-        `/ai/agent/tasks/${taskId}/plan-tasks/complete`,
-        {
-            plan_task_id: planTaskId,
-            verification_notes: verificationNotes,
-            acceptance_results: acceptanceResults,
-        },
-    );
-    return normalizeAgentTask(response.data);
-}
-
 export async function clarifyAgentTask(
     taskId: string,
     answer: string,

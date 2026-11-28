@@ -2,6 +2,7 @@ import {
     forwardRef,
     useEffect,
     useImperativeHandle,
+    useCallback,
     useMemo,
     useRef,
     useState,
@@ -19,6 +20,7 @@ import {
     MoreVertical,
     Pencil,
     Plus,
+    Square,
     Trash2,
     X,
 } from "lucide-react";
@@ -29,7 +31,6 @@ import {
     cancelAgentTask,
     clarifyAgentTask,
     clearAIConversation,
-    completeAgentPlanTask,
     continueAgentTask,
     createAIConversation,
     createAgentTask,
@@ -44,8 +45,6 @@ import {
     type AIConversationSummary,
     type AgentTask,
     type AIMessage,
-    type AgentAcceptanceCriterionResult,
-    type AgentPlanTask,
     type CodeAction,
 } from "../../services/aiService";
 import type { TerminalAIContext } from "../../services/terminalService";
@@ -72,6 +71,8 @@ type AIChatProps = {
     terminalContext?: TerminalAIContext | null;
     hasUnsavedChanges?: boolean;
     onApplyPatch?: (action: CodeAction) => Promise<void>;
+    onReviewAgentAction?: (action: CodeAction) => void;
+    onCloseAgentActionReview?: () => void;
     onAgentChangesApplied?: (
         changes: {
             path: string;
@@ -96,6 +97,7 @@ type AIChatProps = {
 
 export type AIChatHandle = {
     askAboutTerminal: () => void;
+    closeAgentActionReview: () => void;
 };
 
 type ChatMessage = {
@@ -180,7 +182,11 @@ type DiffStats = {
     unchanged: number;
 };
 
-type AgentCriterionStatus = AgentAcceptanceCriterionResult["status"];
+const THINKING_STAGES = [
+    "Analyzing your request",
+    "Evaluating project context",
+    "Preparing a response",
+];
 
 function getAgentRequestError(error: unknown, fallback: string): string {
     if (axios.isAxiosError(error)) {
@@ -189,18 +195,6 @@ function getAgentRequestError(error: unknown, fallback: string): string {
             : error.message;
     }
     return error instanceof Error ? error.message : fallback;
-}
-
-function getCriterionStateKey(
-    taskId: string,
-    planTaskId: string,
-    criterion: string,
-): string {
-    return JSON.stringify([taskId, planTaskId, criterion]);
-}
-
-function getPlanTaskStateKey(taskId: string, planTaskId: string): string {
-    return JSON.stringify([taskId, planTaskId]);
 }
 
 function formatStatus(status: string | null | undefined): string {
@@ -707,6 +701,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     terminalContext,
     hasUnsavedChanges = false,
     onApplyPatch,
+    onReviewAgentAction,
+    onCloseAgentActionReview,
     onAgentChangesApplied,
     onApplyCode,
     onUndoCode,
@@ -739,6 +735,7 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         isLoading,
         setIsLoading,
     ] = useState(false);
+    const [thinkingStage, setThinkingStage] = useState(0);
 
     const [
         previewCode,
@@ -787,10 +784,6 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
     const [agentClarificationAnswer, setAgentClarificationAnswer] = useState("");
     const [agentInteractionError, setAgentInteractionError] = useState<string | null>(null);
     const [isSubmittingClarification, setIsSubmittingClarification] = useState(false);
-    const [isCompletingPlanTask, setIsCompletingPlanTask] = useState<string | null>(null);
-    const [verificationNotesByTask, setVerificationNotesByTask] = useState<Record<string, string>>({});
-    const [criterionStatuses, setCriterionStatuses] = useState<Record<string, AgentCriterionStatus>>({});
-    const [criterionEvidence, setCriterionEvidence] = useState<Record<string, string>>({});
     const [previewAgentActionIndex, setPreviewAgentActionIndex] = useState<number | null>(null);
     const generationAbortRef = useRef<AbortController | null>(null);
     const [conversations, setConversations] = useState<AIConversationSummary[]>([]);
@@ -866,7 +859,20 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         messages,
         isLoading,
         previewCode,
+        agentTask?.updated_at,
     ]);
+
+    useEffect(() => {
+        if (!isLoading) {
+            return;
+        }
+
+        const timer = window.setInterval(() => {
+            setThinkingStage((stage) => (stage + 1) % THINKING_STAGES.length);
+        }, 5000);
+
+        return () => window.clearInterval(timer);
+    }, [isLoading]);
 
     /* =====================================================
        AUTO FOCUS
@@ -1086,7 +1092,11 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         messageId: number,
         action: PreviewAction,
     ) => {
+        if (previewAgentActionIndex !== null) {
+            onCloseAgentActionReview?.();
+        }
         setPreviewPatch(null);
+        setPreviewAgentActionIndex(null);
         setPreviewCode(code);
         setPreviewMessageId(
             messageId,
@@ -1098,7 +1108,11 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         action: CodeAction,
         messageId: number,
     ) => {
+        if (previewAgentActionIndex !== null) {
+            onCloseAgentActionReview?.();
+        }
         setPreviewError(null);
+        setPreviewAgentActionIndex(null);
         setPreviewPatch(action);
         setPreviewCode(action.new_code);
         setPreviewMessageId(messageId);
@@ -1112,20 +1126,24 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         setPreviewCode(action.new_code);
         setPreviewMessageId(null);
         setPreviewAction("general");
+        onReviewAgentAction?.(action);
     };
 
     /* =====================================================
        CLOSE PREVIEW
        ===================================================== */
 
-    const closePreview = () => {
+    const closePreview = useCallback(() => {
+        if (previewAgentActionIndex !== null) {
+            onCloseAgentActionReview?.();
+        }
         setPreviewCode(null);
         setPreviewPatch(null);
         setPreviewError(null);
         setPreviewMessageId(null);
         setPreviewAction("general");
         setPreviewAgentActionIndex(null);
-    };
+    }, [onCloseAgentActionReview, previewAgentActionIndex]);
 
     const handleAgentValidation = async (approved: boolean) => {
         if (!agentTask?.validation_command) {
@@ -1183,62 +1201,6 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         }
     };
 
-    const handleCompletePlanTask = async (
-        event: React.FormEvent<HTMLFormElement>,
-        planTask: AgentPlanTask,
-    ) => {
-        event.preventDefault();
-        if (!agentTask || isCompletingPlanTask) {
-            return;
-        }
-
-        const verificationNotes = verificationNotesByTask[
-            getPlanTaskStateKey(agentTask.id, planTask.id)
-        ]?.trim() ?? "";
-        if (!verificationNotes) {
-            setAgentInteractionError("Add verification notes before submitting outcomes.");
-            return;
-        }
-
-        const acceptanceResults = planTask.acceptance_criteria.map((criterion) => {
-            const key = getCriterionStateKey(agentTask.id, planTask.id, criterion);
-            const savedResult = planTask.acceptance_results.find(
-                (result) => result.criterion === criterion,
-            );
-            const status = criterionStatuses[key] ?? savedResult?.status ?? "not_verified";
-            const evidence = criterionEvidence[key] ?? savedResult?.evidence ?? "";
-            return {
-                criterion,
-                status,
-                evidence: status === "not_verified" ? evidence.trim() || null : evidence.trim(),
-            };
-        });
-        if (acceptanceResults.some(
-            (result) => result.status !== "not_verified" && !result.evidence,
-        )) {
-            setAgentInteractionError("Add evidence for each met or not-met criterion.");
-            return;
-        }
-
-        setAgentInteractionError(null);
-        setIsCompletingPlanTask(planTask.id);
-        try {
-            const updated = await completeAgentPlanTask(
-                agentTask.id,
-                planTask.id,
-                verificationNotes,
-                acceptanceResults,
-            );
-            setAgentTask(updated);
-        } catch (error) {
-            setAgentInteractionError(
-                getAgentRequestError(error, "Unable to submit verification outcomes."),
-            );
-        } finally {
-            setIsCompletingPlanTask(null);
-        }
-    };
-
     const handleAgentApproval = async (
         approval: {
             action_indexes?: number[];
@@ -1292,6 +1254,13 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
             }
 
             if (previewActionIndex !== undefined) {
+                closePreview();
+            } else if (
+                previewAgentActionIndex !== null &&
+                ["applied", "rejected"].includes(
+                    updated.actions[previewAgentActionIndex]?.status ?? "",
+                )
+            ) {
                 closePreview();
             }
         } catch (error) {
@@ -1524,9 +1493,19 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
         );
 
         setInput("");
+        setThinkingStage(0);
         setIsLoading(true);
-        let streamingMessageId: number | null = null;
+        const loadingMessageId = Date.now() + Math.random();
+        let streamingMessageId: number | null = loadingMessageId;
         let streamedContent = "";
+        setMessages((previous) => [
+            ...previous,
+            {
+                id: loadingMessageId,
+                role: "assistant",
+                content: "Thinking...",
+            },
+        ]);
 
         try {
             if (sendMode === "agent") {
@@ -1562,10 +1541,14 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                 setAgentTask(task);
                 setAgentClarificationAnswer("");
                 setAgentInteractionError(null);
-                setVerificationNotesByTask({});
-                setCriterionStatuses({});
-                setCriterionEvidence({});
-                addMessage("assistant", "Agent task started. It will prepare a plan and proposed changes for review.");
+                setMessages((previous) => previous.map((item) =>
+                    item.id === loadingMessageId
+                        ? {
+                            ...item,
+                            content: "Agent task started. It will prepare a plan and proposed changes for review.",
+                        }
+                        : item,
+                ));
                 return;
             }
             let activeConversationId = conversationId;
@@ -1602,16 +1585,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
              */
             const requestController = new AbortController();
             generationAbortRef.current = requestController;
-            const responseMessageId = Date.now() + Math.random();
+            const responseMessageId = loadingMessageId;
             streamingMessageId = responseMessageId;
-            setMessages((previous) => [
-                ...previous,
-                {
-                    id: responseMessageId,
-                    role: "assistant",
-                    content: "Thinking...",
-                },
-            ]);
 
             const response =
                 await streamAIChat({
@@ -1740,7 +1715,14 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                 "ask",
             );
         },
-    }), [handleSend, isLoading, terminalContext]);
+        closeAgentActionReview: () => {
+            if (previewAgentActionIndex !== null) {
+                closePreview();
+            } else {
+                onCloseAgentActionReview?.();
+            }
+        },
+    }), [handleSend, isLoading, terminalContext, previewAgentActionIndex, closePreview, onCloseAgentActionReview]);
 
     /* =====================================================
        KEYBOARD HANDLER
@@ -2217,13 +2199,13 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                         {message.role === "assistant" &&
                                         message.content === "Thinking..." &&
                                         isLoading ? (
-                                            <div className="ai-chat__typing" role="status" aria-label="Thinking">
-                                                <span>Thinking</span>
-                                                <span className="ai-chat__typing-dots" aria-hidden="true">
-                                                    <i />
-                                                    <i />
-                                                    <i />
-                                                </span>
+                                            <div
+                                                className="ai-chat__typing"
+                                                role="status"
+                                                aria-label={THINKING_STAGES[thinkingStage]}
+                                            >
+                                                <span className="ai-chat__thinking-spinner" aria-hidden="true" />
+                                                <span>{THINKING_STAGES[thinkingStage]}</span>
                                             </div>
                                         ) : message.role === "assistant" ? (
                                             <ReactMarkdown
@@ -2298,17 +2280,23 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                         <ol className="ai-chat__agent-steps">
                             {agentTask.steps.map((step) => (
                                 <li key={step.sequence} className={`is-${step.status}`}>
-                                    <span>{step.description}</span>
+                                    <div className="ai-chat__agent-step-heading">
+                                        <span>{step.description}</span>
+                                        <span className={`ai-chat__agent-step-status is-${step.status}`}>
+                                            {formatStatus(step.status)}
+                                        </span>
+                                    </div>
                                     {step.input && (
-                                        <p className="ai-chat__agent-step-input">{step.input}</p>
+                                        <div className="ai-chat__agent-step-input">
+                                            <strong>Input</strong>
+                                            <p>{step.input}</p>
+                                        </div>
                                     )}
                                     {step.output && (
-                                        <details className="ai-chat__agent-step-response">
-                                            <summary>
-                                                {step.type === "plan" ? "View LLM response" : "View step output"}
-                                            </summary>
+                                        <div className="ai-chat__agent-step-response">
+                                            <strong>{step.type === "plan" ? "LLM response" : "Step output"}</strong>
                                             <pre>{step.output}</pre>
-                                        </details>
+                                        </div>
                                     )}
                                     {step.error && (
                                         <p className="ai-chat__agent-error">{step.error}</p>
@@ -2381,18 +2369,10 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                 )}
                                 <div className="ai-chat__plan-tasks">
                                     <strong>Plan tasks</strong>
+                                    <p className="ai-chat__plan-auto-verification">
+                                        The agent advances tasks automatically and records project validation results when available.
+                                    </p>
                                     {agentTask.plan_details.tasks.map((planTask) => {
-                                        const notesKey = getPlanTaskStateKey(agentTask.id, planTask.id);
-                                        const dependenciesComplete = planTask.dependencies.every(
-                                            (dependency) => agentTask.plan_details?.tasks.find(
-                                                (candidate) => candidate.id === dependency,
-                                            )?.status === "completed",
-                                        );
-                                        const canVerifyPlanTask =
-                                            agentTask.status === "awaiting_validation" &&
-                                            ["applied", "in_progress"].includes(planTask.status) &&
-                                            dependenciesComplete;
-
                                         return (
                                             <article className="ai-chat__plan-task" key={planTask.id}>
                                                 <div className="ai-chat__plan-task-heading">
@@ -2438,84 +2418,6 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                                                         })}
                                                     </ul>
                                                 </div>
-                                                {planTask.verification_steps.length > 0 && (
-                                                    <details className="ai-chat__plan-task-verification">
-                                                        <summary>Verification steps</summary>
-                                                        <ul>{planTask.verification_steps.map((step) => <li key={step}>{step}</li>)}</ul>
-                                                    </details>
-                                                )}
-                                                {canVerifyPlanTask && (
-                                                    <form
-                                                        className="ai-chat__verification-form"
-                                                        onSubmit={(event) => void handleCompletePlanTask(event, planTask)}
-                                                    >
-                                                        <strong>Record your verification</strong>
-                                                        {planTask.acceptance_criteria.map((criterion) => {
-                                                            const key = getCriterionStateKey(agentTask.id, planTask.id, criterion);
-                                                            const savedResult = planTask.acceptance_results.find(
-                                                                (result) => result.criterion === criterion,
-                                                            );
-                                                            const status = criterionStatuses[key] ?? savedResult?.status ?? "not_verified";
-                                                            const evidence = criterionEvidence[key] ?? savedResult?.evidence ?? "";
-                                                            const statusId = `${planTask.id}-${planTask.acceptance_criteria.indexOf(criterion)}-status`;
-                                                            const evidenceId = `${planTask.id}-${planTask.acceptance_criteria.indexOf(criterion)}-evidence`;
-                                                            return (
-                                                                <div className="ai-chat__verification-criterion" key={criterion}>
-                                                                    <label htmlFor={statusId}>{criterion}</label>
-                                                                    <select
-                                                                        id={statusId}
-                                                                        value={status}
-                                                                        disabled={isCompletingPlanTask !== null}
-                                                                        onChange={(event) => setCriterionStatuses((current) => ({
-                                                                            ...current,
-                                                                            [key]: event.target.value as AgentCriterionStatus,
-                                                                        }))}
-                                                                    >
-                                                                        <option value="met">Met</option>
-                                                                        <option value="not_met">Not met</option>
-                                                                        <option value="not_verified">Not verified</option>
-                                                                    </select>
-                                                                    {status !== "not_verified" && (
-                                                                        <>
-                                                                            <label htmlFor={evidenceId}>Evidence</label>
-                                                                            <input
-                                                                                id={evidenceId}
-                                                                                required
-                                                                                value={evidence}
-                                                                                disabled={isCompletingPlanTask !== null}
-                                                                                onChange={(event) => setCriterionEvidence((current) => ({
-                                                                                    ...current,
-                                                                                    [key]: event.target.value,
-                                                                                }))}
-                                                                                placeholder="Describe what you checked"
-                                                                            />
-                                                                        </>
-                                                                    )}
-                                                                </div>
-                                                            );
-                                                        })}
-                                                        <label htmlFor={`${planTask.id}-verification-notes`}>Verification notes</label>
-                                                        <textarea
-                                                            id={`${planTask.id}-verification-notes`}
-                                                            required
-                                                            rows={2}
-                                                            value={verificationNotesByTask[notesKey] ?? ""}
-                                                            disabled={isCompletingPlanTask !== null}
-                                                            onChange={(event) => setVerificationNotesByTask((current) => ({
-                                                                ...current,
-                                                                [notesKey]: event.target.value,
-                                                            }))}
-                                                            placeholder="Summarize how you verified this task"
-                                                        />
-                                                        <button
-                                                            type="submit"
-                                                            className="is-primary"
-                                                            disabled={isCompletingPlanTask !== null || !verificationNotesByTask[notesKey]?.trim()}
-                                                        >
-                                                            {isCompletingPlanTask === planTask.id ? "Saving..." : "Submit outcomes"}
-                                                        </button>
-                                                    </form>
-                                                )}
                                             </article>
                                         );
                                     })}
@@ -2758,7 +2660,8 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
                 CODE DIFF PREVIEW
                 ================================================= */}
 
-            {previewCode !== null && (
+            {previewCode !== null &&
+                (previewAgentActionIndex === null || !onReviewAgentAction) && (
                 <div className="ai-chat__preview">
                     {/* Preview header */}
 
@@ -3031,15 +2934,21 @@ const AIChat = forwardRef<AIChatHandle, AIChatProps>(function AIChat({
 
                         <button
                             type="button"
-                            className="ai-chat__send-button"
+                            className={`ai-chat__send-button${isLoading ? " is-stop" : ""}`}
                             onClick={() => isLoading
                                 ? generationAbortRef.current?.abort()
                                 : void handleSend()}
                             disabled={!isLoading && !input.trim()}
                             aria-label={isLoading ? "Stop generation" : "Send message"}
+                            title={isLoading ? "Stop generation" : "Send message"}
                         >
                             {isLoading
-                                ? "Stop"
+                                ? (
+                                    <>
+                                        <Square size={11} fill="currentColor" aria-hidden="true" />
+                                        <span>Stop</span>
+                                    </>
+                                )
                                 : "↑"}
                         </button>
                     </div>

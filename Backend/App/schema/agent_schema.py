@@ -299,15 +299,6 @@ class AgentClarification(BaseModel):
     answer: str = Field(..., min_length=1, max_length=5000)
 
 
-class AgentPlanTaskCompletion(BaseModel):
-    plan_task_id: str = Field(..., min_length=1, max_length=80)
-    verification_notes: str = Field(..., min_length=1, max_length=2000)
-    acceptance_results: list[AgentAcceptanceCriterionResult] = Field(
-        default_factory=list,
-        max_length=10,
-    )
-
-
 class AgentAction(BaseModel):
     action: CodeAction
     status: Literal[

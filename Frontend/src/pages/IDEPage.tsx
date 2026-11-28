@@ -31,11 +31,13 @@ import {
     useNavigate,
     useParams,
 } from "react-router-dom";
+import { DiffEditor } from "@monaco-editor/react";
 import { createPortal } from "react-dom";
 import { useAuth } from "../context/AuthContext";
 
 import {
     Code2,
+    Columns2,
     FilePlus,
     FolderPlus,
     GitBranch,
@@ -134,6 +136,9 @@ export default function IDEPage() {
     ] = useState<number | null>(
         null
     );
+    const [isSplitViewerOpen, setIsSplitViewerOpen] = useState(false);
+    const [splitViewerTabId, setSplitViewerTabId] = useState<number | null>(null);
+    const [agentReviewPreview, setAgentReviewPreview] = useState<CodeAction | null>(null);
     const tabsRef = useRef(tabs);
     useEffect(() => {
         tabsRef.current = tabs;
@@ -404,6 +409,14 @@ export default function IDEPage() {
             tab =>
                 tab.file.id === activeTabId
         ) ?? null;
+    const splitViewerTab =
+        tabs.find(
+            (tab) =>
+                tab.file.id === splitViewerTabId &&
+                tab.file.id !== activeTabId,
+        ) ??
+        tabs.find((tab) => tab.file.id !== activeTabId) ??
+        activeTab;
 
 
     // =========================================
@@ -580,14 +593,9 @@ export default function IDEPage() {
     // =========================================
 
     function handleEditorChange(
+        fileId: number,
         value: string
     ) {
-
-        if (activeTabId === null) {
-
-            return;
-        }
-
 
         setTabs(
             currentTabs =>
@@ -596,7 +604,7 @@ export default function IDEPage() {
 
                         if (
                             tab.file.id !==
-                            activeTabId
+                            fileId
                         ) {
 
                             return tab;
@@ -2399,7 +2407,7 @@ export default function IDEPage() {
 
                         <main className="ide-editor">
 
-                            {tabs.length > 0 ? (
+                            {tabs.length > 0 || agentReviewPreview ? (
 
                                 <>
 
@@ -2506,7 +2514,7 @@ export default function IDEPage() {
 
                                     </div>
 
-                                    {activeTab && (
+                                    {activeTab && !agentReviewPreview && (
                                         <nav
                                             className="editor-breadcrumbs"
                                             aria-label="File breadcrumbs"
@@ -2545,12 +2553,12 @@ export default function IDEPage() {
 
                                                 <span>
                                                     {
-                                                        activeTab.file.name
+                                                        agentReviewPreview?.file_path ?? activeTab.file.name
                                                     }
                                                 </span>
 
 
-                                                {activeTab.isDirty && (
+                                                {!agentReviewPreview && activeTab.isDirty && (
 
                                                     <span
                                                         className="editor-modified"
@@ -2565,7 +2573,36 @@ export default function IDEPage() {
 
                                             <div className="editor-actions">
 
-                                                {saveError && (
+                                                {!agentReviewPreview && (
+                                                <button
+                                                    type="button"
+                                                    className={`editor-split-button${isSplitViewerOpen ? " is-active" : ""}`}
+                                                    aria-pressed={isSplitViewerOpen}
+                                                    onClick={() => {
+                                                        if (!isSplitViewerOpen && activeTab) {
+                                                            setSplitViewerTabId((currentId) =>
+                                                                tabs.some(
+                                                                    (tab) =>
+                                                                        tab.file.id === currentId &&
+                                                                        tab.file.id !== activeTab.file.id,
+                                                                )
+                                                                    ? currentId
+                                                                    : tabs.find(
+                                                                        (tab) =>
+                                                                            tab.file.id !== activeTab.file.id,
+                                                                    )?.file.id ?? activeTab.file.id,
+                                                            );
+                                                        }
+                                                        setIsSplitViewerOpen((isOpen) => !isOpen);
+                                                    }}
+                                                    title={isSplitViewerOpen ? "Close split editor" : "Split editor right"}
+                                                >
+                                                    <Columns2 size={15} />
+                                                    <span>{isSplitViewerOpen ? "Unsplit" : "Split"}</span>
+                                                </button>
+                                                )}
+
+                                                {!agentReviewPreview && saveError && (
 
                                                     <span
                                                         className="editor-save-error"
@@ -2577,7 +2614,7 @@ export default function IDEPage() {
                                                 )}
 
 
-                                                {isSaving ? (
+                                                {!agentReviewPreview && (isSaving ? (
 
                                                     <span
                                                         className="editor-save-status"
@@ -2601,10 +2638,10 @@ export default function IDEPage() {
                                                         Saved
                                                     </span>
 
-                                                )}
+                                                ))}
 
 
-                                                <button
+                                                {!agentReviewPreview && <button
                                                     type="button"
                                                     className="editor-save-button"
                                                     onClick={
@@ -2625,7 +2662,7 @@ export default function IDEPage() {
                                                         Save
                                                     </span>
 
-                                                </button>
+                                                </button>}
 
                                             </div>
 
@@ -2638,44 +2675,111 @@ export default function IDEPage() {
                                     {/* Monaco Editor */}
                                     {/* ========================= */}
 
-                                    {activeTab && (
+                                    {(activeTab || agentReviewPreview) && (
 
                                         <div
-                                            className="editor-area"
+                                            className={`editor-area${isSplitViewerOpen && !agentReviewPreview ? " is-split" : ""}`}
                                         >
 
-                                            <CodeEditor
-                                                key={
-                                                    activeTab.file.id
-                                                }
-                                                ref={editorRef}
-                                                value={
-                                                    activeTab.content
-                                                }
-                                                language={
-                                                    activeTab.language
-                                                }
-                                                onChange={(
-                                                    value
-                                                ) => {
+                                            {agentReviewPreview ? (
+                                                <section className="editor-review-preview" aria-label="AI proposed change review">
+                                                    <header className="editor-review-preview__header">
+                                                        <div>
+                                                            <strong>{agentReviewPreview.file_path}</strong>
+                                                            <span>{agentReviewPreview.description}</span>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => aiChatRef.current?.closeAgentActionReview()}
+                                                            aria-label="Close proposed change review"
+                                                            title="Close review"
+                                                        >
+                                                            <X size={15} />
+                                                        </button>
+                                                    </header>
+                                                    <div className="editor-review-preview__diff">
+                                                        <DiffEditor
+                                                            height="100%"
+                                                            language={getLanguageFromFileName(agentReviewPreview.file_path)}
+                                                            theme="vs-dark"
+                                                            original={agentReviewPreview.old_code}
+                                                            modified={agentReviewPreview.new_code}
+                                                            options={{
+                                                                automaticLayout: true,
+                                                                readOnly: true,
+                                                                originalEditable: false,
+                                                                renderSideBySide: true,
+                                                                minimap: { enabled: false },
+                                                                scrollBeyondLastLine: false,
+                                                                wordWrap: "on",
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </section>
+                                            ) : activeTab ? (
+                                                <>
+                                            <div className="editor-split-pane">
+                                                <CodeEditor
+                                                    key={activeTab.file.id}
+                                                    ref={editorRef}
+                                                    value={activeTab.content}
+                                                    language={activeTab.language}
+                                                    onChange={(value) =>
+                                                        handleEditorChange(activeTab.file.id, value ?? "")
+                                                    }
+                                                    onSelectionChange={(selection) => {
+                                                        setSelectedCode(
+                                                            selection
+                                                                ? {
+                                                                    code: selection.text,
+                                                                    startLine: selection.startLine,
+                                                                    endLine: selection.endLine,
+                                                                }
+                                                                : null,
+                                                        );
+                                                    }}
+                                                />
+                                            </div>
 
-                                                    handleEditorChange(
-                                                        value ?? ""
-                                                    );
-
-                                                }}
-                                                onSelectionChange={(selection) => {
-                                                    setSelectedCode(
-                                                        selection
-                                                            ? {
-                                                                code: selection.text,
-                                                                startLine: selection.startLine,
-                                                                endLine: selection.endLine,
+                                            {isSplitViewerOpen && splitViewerTab && (
+                                                <div className="editor-split-pane editor-split-pane-secondary">
+                                                    <div className="editor-split-header">
+                                                        <span className="editor-split-title">
+                                                            {splitViewerTab.file.path ?? splitViewerTab.file.name}
+                                                        </span>
+                                                        <select
+                                                            aria-label="File in split editor"
+                                                            value={splitViewerTab.file.id}
+                                                            onChange={(event) =>
+                                                                setSplitViewerTabId(Number(event.target.value))
                                                             }
-                                                            : null,
-                                                    );
-                                                }}
-                                            />
+                                                        >
+                                                            {tabs.map((tab) => (
+                                                                <option
+                                                                    key={tab.file.id}
+                                                                    value={tab.file.id}
+                                                                    disabled={
+                                                                        tabs.length > 1 &&
+                                                                        tab.file.id === activeTab.file.id
+                                                                    }
+                                                                >
+                                                                    {tab.file.path ?? tab.file.name}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <CodeEditor
+                                                        key={splitViewerTab.file.id}
+                                                        value={splitViewerTab.content}
+                                                        language={splitViewerTab.language}
+                                                        onChange={(value) =>
+                                                            handleEditorChange(splitViewerTab.file.id, value ?? "")
+                                                        }
+                                                    />
+                                                </div>
+                                            )}
+                                                </>
+                                            ) : null}
 
                                         </div>
 
@@ -2807,6 +2911,8 @@ export default function IDEPage() {
                             ref={aiChatRef}
                             projectId={numericProjectId}
                             hasUnsavedChanges={tabs.some((tab) => tab.isDirty)}
+                            onReviewAgentAction={setAgentReviewPreview}
+                            onCloseAgentActionReview={() => setAgentReviewPreview(null)}
                             onAgentChangesApplied={handleAgentChangesApplied}
                             context={activeTab?.content ?? null}
                             fileName={activeTab?.file.name ?? null}
